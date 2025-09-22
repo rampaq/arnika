@@ -74,6 +74,7 @@ func tcpServer(url string, result chan string, done chan bool) {
 		<-quit
 		log.Println("TCP Server shutdown")
 		close(done)
+		close(result)
 	}()
 	log.Printf("TCP Server listening on %s\n", url)
 	ln, err := net.Listen("tcp", url)
@@ -181,67 +182,74 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to parse config: %v", err)
 	}
-	interval := cfg.Interval
+
+	mainLoop(cfg)
+}
+
+func mainLoop(cfg *config.Config) {
 	done := make(chan bool)
-	skip := make(chan bool)
-	result := make(chan string)
+	skipPush := make(chan bool)
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
-	for {
-		go tcpServer(cfg.ListenAddress, result, done)
-		go func() {
-			for {
-				r := <-result
-				go func() {
-					skip <- true
-				}()
-				log.Println("<-- BACKUP: received key_id " + r)
-				// to stuff with key
-				key, err := kmsServer.GetKeyByID(r)
-				if err != nil {
-					log.Println(err.Error())
-					time.Sleep(time.Millisecond * 100)
-					continue
-				}
-				err = setPSK(key.GetKey(), cfg, "<-- BACKUP:")
-				if err != nil {
-					log.Println(err.Error())
-				}
-			}
-		}()
-		go func() {
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			i := 20
-			for {
-				select {
-				case <-skip:
-				default:
-					// get key_id and send
-					log.Printf("--> MASTER: fetch key_id from %s\n", cfg.KMSURL)
 
-					key, err := kmsServer.GetNewKey()
-					if err != nil {
-						log.Println(err.Error())
-						time.Sleep(time.Second * time.Duration(fibonacciRecursion(i/10)))
-						i++
-						continue
-					}
-					i = 20
-					log.Printf("--> MASTER: send key_id to %s\n", cfg.ServerAddress)
-					err = tcpClient(cfg.ServerAddress, key.GetID())
-					if err != nil {
-						log.Println(err.Error())
-					}
-					err = setPSK(key.GetKey(), cfg, "--> MASTER:")
-					if err != nil {
-						log.Println(err.Error())
-					}
-				}
-				<-ticker.C
-			}
+	go listenIds(cfg, skipPush, done, kmsServer)
+	go pushIds(cfg, skipPush, kmsServer)
+	<-done
+}
+
+func listenIds(cfg *config.Config, skipPush chan bool, done chan bool, kmsServer *kms.KMSHandler) {
+	result := make(chan string)
+	go tcpServer(cfg.ListenAddress, result, done)
+
+	for r := range result {
+		go func() {
+			skipPush <- true
 		}()
-		<-done
-		break
+		log.Println("<-- BACKUP: received key_id " + r)
+		// to stuff with key
+		key, err := kmsServer.GetKeyByID(r)
+		if err != nil {
+			log.Println(err.Error())
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
+		err = setPSK(key.GetKey(), cfg, "<-- BACKUP:")
+		if err != nil {
+			log.Println(err.Error())
+		}
 	}
 }
+
+func pushIds(cfg *config.Config, skipPush chan bool, kmsServer *kms.KMSHandler) {
+	ticker := time.NewTicker(cfg.Interval)
+	defer ticker.Stop()
+	i := 20
+	for {
+		select {
+		case <-skipPush:
+		default:
+			// get key_id and send
+			log.Printf("--> MASTER: fetch key_id from %s\n", cfg.KMSURL)
+
+			key, err := kmsServer.GetNewKey()
+			if err != nil {
+				log.Println(err.Error())
+				time.Sleep(time.Second * time.Duration(fibonacciRecursion(i/10)))
+				i++
+				continue
+			}
+			i = 20
+			log.Printf("--> MASTER: send key_id to %s\n", cfg.ServerAddress)
+			err = tcpClient(cfg.ServerAddress, key.GetID())
+			if err != nil {
+				log.Println(err.Error())
+			}
+			err = setPSK(key.GetKey(), cfg, "--> MASTER:")
+			if err != nil {
+				log.Println(err.Error())
+			}
+		}
+		<-ticker.C
+	}
+}
+
