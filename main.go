@@ -188,12 +188,25 @@ func main() {
 
 func mainLoop(cfg *config.Config) {
 	done := make(chan bool)
-	skipPush := make(chan bool)
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
 
-	go listenIds(cfg, skipPush, done, kmsServer)
-	go pushIds(cfg, skipPush, kmsServer)
+	// peers push key ids in cycles; skipPush skips pushing for current cycle
+	var skipPush chan bool
+	if cfg.ListenAddress != "" && cfg.ServerAddress != "" {
+		skipPush = make(chan bool)
+	} else {
+		skipPush = nil
+	}
+
+	if cfg.ListenAddress != "" {
+		go listenIds(cfg, skipPush, done, kmsServer)
+	}
+
+	if cfg.ServerAddress != "" {
+		go pushIds(cfg, skipPush, kmsServer)
+	}
+
 	<-done
 }
 
@@ -202,9 +215,11 @@ func listenIds(cfg *config.Config, skipPush chan bool, done chan bool, kmsServer
 	go tcpServer(cfg.ListenAddress, result, done)
 
 	for r := range result {
-		go func() {
-			skipPush <- true
-		}()
+		if skipPush != nil {
+			go func() {
+				skipPush <- true
+			}()
+		}
 		log.Println("<-- BACKUP: received key_id " + r)
 		// to stuff with key
 		key, err := kmsServer.GetKeyByID(r)

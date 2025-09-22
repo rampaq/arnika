@@ -7,6 +7,7 @@ import (
 )
 
 // Config contains the configuration values for the arnika service.
+// At least one of ListenAddress or ServerAddress is non-zero string
 type Config struct {
 	ListenAddress          string        // LISTEN_ADDRESS, Address to listen on for incoming connections
 	ServerAddress          string        // SERVER_ADDRESS, Address of the arnika server
@@ -36,13 +37,10 @@ func (c *Config) UsePQC() bool {
 func Parse() (*Config, error) {
 	config := &Config{}
 	var err error
-	config.ListenAddress, err = getEnv("LISTEN_ADDRESS")
-	if err != nil {
-		return nil, err
-	}
-	config.ServerAddress, err = getEnv("SERVER_ADDRESS")
-	if err != nil {
-		return nil, err
+	config.ListenAddress = getEnvOrDefault("LISTEN_ADDRESS", "")
+	config.ServerAddress = getEnvOrDefault("SERVER_ADDRESS", "")
+	if config.ListenAddress == "" && config.ServerAddress == "" {
+		return nil, fmt.Errorf("at least one of LISTEN_ADDRESS or SERVER_ADDRESS must be set")
 	}
 	config.Certificate = getEnvOrDefault("CERTIFICATE", "")
 	config.PrivateKey = getEnvOrDefault("PRIVATE_KEY", "")

@@ -82,6 +82,50 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParseListenOrServer(t *testing.T) {
+  // Test 1
+	t.Setenv("LISTEN_ADDRESS", "127.0.0.1:8080")
+	t.Setenv("SERVER_ADDRESS", "")
+	t.Setenv("KMS_URL", "https://example.com")
+	t.Setenv("WIREGUARD_INTERFACE", "wg0")
+	t.Setenv("WIREGUARD_PEER_PUBLIC_KEY", "H9adDtDHXhVzSI4QMScbftvQM49wGjmBT1g6dgynsHc=")
+
+	result, err := Parse()
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if result.ListenAddress != "127.0.0.1:8080" || result.ServerAddress != "" {
+		t.Errorf("Expected empty ServerAddress (is %s) and ListenAddress %s (is %s)", result.ServerAddress, "127.0.0.1:8080", result.ListenAddress)
+	}
+
+  // Test 2
+	t.Setenv("LISTEN_ADDRESS", "")
+	t.Setenv("SERVER_ADDRESS", "127.0.0.1:8080")
+	t.Setenv("KMS_URL", "https://example.com")
+	t.Setenv("WIREGUARD_INTERFACE", "wg0")
+	t.Setenv("WIREGUARD_PEER_PUBLIC_KEY", "H9adDtDHXhVzSI4QMScbftvQM49wGjmBT1g6dgynsHc=")
+
+	result, err = Parse()
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if result.ServerAddress != "127.0.0.1:8080" || result.ListenAddress != "" {
+		t.Errorf("Expected empty ListenAddress (is %s) and ServerAddress %s (is %s)", result.ListenAddress, "127.0.0.1:8080", result.ServerAddress)
+	}
+
+  // Test 3
+	t.Setenv("LISTEN_ADDRESS", "")
+	t.Setenv("SERVER_ADDRESS", "")
+	t.Setenv("KMS_URL", "https://example.com")
+	t.Setenv("WIREGUARD_INTERFACE", "wg0")
+	t.Setenv("WIREGUARD_PEER_PUBLIC_KEY", "H9adDtDHXhVzSI4QMScbftvQM49wGjmBT1g6dgynsHc=")
+
+	_, err = Parse()
+	if err == nil {
+		t.Errorf("Expected error when parsing both-empty LISTEN_ADDRESS and SERVER_ADDRESS")
+	}
+}
+
 func TestGetEnvOrDefault(t *testing.T) {
 	// Test case 1: environment variable exists
 	t.Setenv("TEST_KEY", "test_value")
