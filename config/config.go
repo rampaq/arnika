@@ -2,8 +2,24 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
+)
+
+// KmsMode sets behaviour when KMS key is not available
+type KmsMode int8
+
+const (
+	// When KMS query fails (on either master/slave), abort and retry again
+	KmsStrict KmsMode = iota
+	// When KMS query fails
+	//  - when PQC permitted -> use only PQC
+	//  - when PQC not permitted -> abort
+	// WARNING: This options requires to notify the peer arnika instance that it should use only PQC.
+	// This might be abused by attacker to degrade security to PQC, unless some non-replayable packet is used to signal this situation - TODO.
+	KmsPQCFallback
 )
 
 // Config contains the configuration values for the arnika service.
@@ -15,6 +31,7 @@ type Config struct {
 	CACertificate          string        // CA_CERTIFICATE, Path to the CA certificate file
 	KMSURL                 string        // KMS_URL, URL of the KMS server
 	KMSHTTPTimeout         time.Duration // KMS_HTTP_TIMEOUT, HTTP connection timeout
+	KMSMode                KmsMode       // KMS_MODE, specify behaviour on KMS errors
 	Interval               time.Duration // INTERVAL, Interval between key updates
 	WireGuardInterface     string        // WIREGUARD_INTERFACE, Name of the WireGuard interface to configure
 	WireguardPeerPublicKey string        // WIREGUARD_PEER_PUBLIC_KEY, Public key of the WireGuard peer
@@ -74,7 +91,23 @@ func Parse() (*Config, error) {
 		if _, err := os.Stat(config.PQCPSKFile); os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to open PQC PSK file: %w", err)
 		}
+		log.Println("PQC enabled")
 	}
+
+	switch strings.ToLower(getEnvOrDefault("KMS_MODE", "")) {
+	case "strict", "":
+		config.KMSMode = KmsStrict
+		log.Println("KMS strict mode enabled")
+	case "pqc_fallback":
+		if !config.UsePQC() {
+			return nil, fmt.Errorf("cannot set KMS_MODE=PQC_FALLBACK when not using PQC")
+		}
+		config.KMSMode = KmsPQCFallback
+		log.Println("PQC fallback mode enabled")
+	default:
+		return nil, fmt.Errorf("unknown KMS_MODE")
+	}
+
 	return config, nil
 }
 

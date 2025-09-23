@@ -80,6 +80,48 @@ func TestParse(t *testing.T) {
 	if err == nil {
 		t.Error("Expected an error for non-existent PQC keyfile")
 	}
+	t.Setenv("PQC_PSK_FILE", "/dev/urandom")
+
+	// Test case 5: KMS mode
+	t.Setenv("KMS_MODE", "nonexistent mode")
+	_, err = Parse()
+	if err == nil {
+		t.Error("Expected an error for non-existent KMS_MODE")
+	}
+
+	t.Setenv("KMS_MODE", "")
+	parsed, err := Parse()
+	if err != nil {
+		t.Error("Unexpected error for default strict KMS_MODE")
+	}
+	if parsed.KMSMode != KmsStrict {
+		t.Error("Invalid parsing: default KMS mode is not strict mode")
+	}
+
+	t.Setenv("KMS_MODE", "STRICT")
+	parsed, err = Parse()
+	if err != nil {
+		t.Error("Unexpected error for strict KMS_MODE")
+	}
+	if parsed.KMSMode != KmsStrict {
+		t.Error("Invalid parsing: KMS_MODE=STRICT does not set strict mode")
+	}
+
+	t.Setenv("KMS_MODE", "PQC_FALLBACK")
+	parsed, err = Parse()
+	if err != nil {
+		t.Error("Unexpected error for PQC fallback KMS_MODE")
+	}
+	if parsed.KMSMode != KmsPQCFallback {
+		t.Error("Invalid parsing: KMS_MODE=PQC_FALLBACK does not set PQC fallback mode")
+	}
+
+	t.Setenv("PQC_PSK_FILE", "non_existent_file")
+	t.Setenv("KMS_MODE", "PQC_FALLBACK")
+	_, err = Parse()
+	if err == nil {
+		t.Error("Expected error for PQC fallback without PQC")
+	}
 }
 
 func TestGetEnvOrDefault(t *testing.T) {
