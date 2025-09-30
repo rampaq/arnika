@@ -19,6 +19,7 @@ type Config struct {
 	WireGuardInterface     string        // WIREGUARD_INTERFACE, Name of the WireGuard interface to configure
 	WireguardPeerPublicKey string        // WIREGUARD_PEER_PUBLIC_KEY, Public key of the WireGuard peer
 	PQCPSKFile             string        // PQC_PSK_FILE, Path to the PQC PSK file
+	PSKExpirationInterval     time.Duration   // PSK_EXPIRATION_INTERVAL, Interval; if PSK is not refreshed in this interval, deactivate peer; 0 to disable
 }
 
 // Use PQC returns a boolean indicating whether the PQC PSK file is set in the Config struct.
@@ -75,6 +76,11 @@ func Parse() (*Config, error) {
 			return nil, fmt.Errorf("failed to open PQC PSK file: %w", err)
 		}
 	}
+	config.PSKExpirationInterval, err = time.ParseDuration(getEnvOrDefault("PSK_EXPIRATION_INTERVAL", "0"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse PSK_EXPIRATION_INTERVAL: %w", err)
+	}
+
 	return config, nil
 }
 

@@ -2,7 +2,9 @@ package wg
 
 import (
 	"fmt"
+	"math"
 	"sync"
+	"time"
 
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -21,6 +23,9 @@ type WireGuardHandler struct {
 	active bool
 	// mutex for activating/deactivating interface
 	mu sync.Mutex
+	// expiration timer
+	timer *time.Timer
+	timerDur time.Duration
 }
 
 // Setup Wireguard interface - initiate handler and set random PSK for wg iface.
@@ -63,9 +68,32 @@ func SetupWireGuardIF(ifname string, peerPublicKey string) (*WireGuardHandler, e
 	return &wgh, nil
 }
 
+// AddExpirationTimer adds an timer which deactivates peer when SetKey is not called during duration dur.
+// The created timer is inactive upon calling AddExpirationTimer.
+//
+// When duration is zero duration, no timer is created.
+//
+// Returns whether new timer was created.
+func (wg *WireGuardHandler) AddExpirationTimer(dur time.Duration) bool {
+	if dur == 0 {
+		return false
+	}
+	wg.timerDur = dur
+	wg.timer = time.AfterFunc(math.MaxInt64, func() {
+		err := wg.DeactivatePeer()
+		if err != nil {
+			fmt.Printf("Error in ExpirationTimer function: %v\n", err)
+			return
+		}
+		fmt.Printf("No PSK set during %s, peer disabled\n", dur)
+	})
+	wg.timer.Stop()
+	return true
+}
+
 // SetKey sets the preshared key for a WireGuard device.
 //
-// It automatically activates the wg interface after setting the PSK.
+// It automatically activates the wg interface after setting the PSK. If AddExpirationTimer was called earlier, activate the timer.
 //
 // Parameters:
 // - pskString is the preshared key as a b64 string.
@@ -85,12 +113,14 @@ func (wg *WireGuardHandler) SetKey(pskString string) error {
 	if err != nil {
 		return fmt.Errorf("failed to activate interface: %w", err)
 	}
-
+	if wg.timer != nil {
+		wg.timer.Reset(wg.timerDur)
+	}
 	return err
 }
 
 // DeactivatePeer disables peer communication by first setting random PSK and if that fails, brings the whole wg interface down.
-// Note that propagating the PSK can take upto 2 minutes. That is inherent to the Wireguard rekeying. The 2 minute timer can be overcomed by deactivating&activating the interface to trigger rekeying.
+// Note that propagating the PSK, and hence deactivating the peer, can take upto 2 minutes. That is inherent to the Wireguard rekeying mechanism. The 2 minute timer can be overcomed by deactivating&activating the interface to trigger rekeying.
 //
 // No parameters.
 //
@@ -99,7 +129,17 @@ func (wg *WireGuardHandler) SetKey(pskString string) error {
 func (wg *WireGuardHandler) DeactivatePeer() error {
 	err := wg.setRandomKey()
 	if err != nil {
-		wg.interfaceDown()
+		// failsafe
+		fmt.Printf("Failed to set random PSK, deactivating %s\n", wg.ifname)
+		err = wg.interfaceDown()
+		if err != nil {
+			return fmt.Errorf("failed to set random PSK & failed to deactivate interface: %w", err)
+		}
+	}
+
+	// when peer is deactivated, no need to run timer
+	if wg.timer != nil {
+		wg.timer.Stop()
 	}
 	return nil
 }
