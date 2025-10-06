@@ -5,6 +5,7 @@ go 1.24
 require (
 	golang.org/x/crypto v0.41.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
+	github.com/google/uuid v1.6.0
 )
 
 require (

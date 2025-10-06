@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 )
@@ -74,6 +75,7 @@ func Parse() (*Config, error) {
 		if _, err := os.Stat(config.PQCPSKFile); os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to open PQC PSK file: %w", err)
 		}
+		log.Println("PQC enabled")
 	}
 	return config, nil
 }
