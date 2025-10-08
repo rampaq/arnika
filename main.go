@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -9,7 +8,7 @@ import (
 	"time"
 
 	"github.com/arnika-project/arnika/config"
-	"github.com/arnika-project/arnika/kdf"
+	"github.com/arnika-project/arnika/crypto/kdf"
 	"github.com/arnika-project/arnika/kms"
 	"github.com/arnika-project/arnika/net"
 	wg "github.com/arnika-project/arnika/wireguard"
@@ -22,28 +21,17 @@ var (
 	APPName string
 )
 
-func getPQCKey(pqcKeyFile string) (string, error) {
-	file, err := os.Open(pqcKeyFile)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Scan()
-	return scanner.Text(), nil
-}
-
 func setPSK(psk string, cfg *config.Config) error {
 	if cfg.UsePQC() {
-		pQCKey, err := getPQCKey(cfg.PQCPSKFile)
+		pqcKey, err := kdf.GetPQCMasterKey(cfg.PQCPSKFile)
 		if err != nil {
 			return err
 		}
 
 		if psk == "" {
-			psk, err = kdf.GetPQCSubkey(pQCKey, kdf.SubkeyPqcOnly)
+			psk, err = kdf.GetPQCSubkey(pqcKey, kdf.SubkeyPqcOnly)
 		} else {
-			psk, err = kdf.GetHybridKey(psk, pQCKey)
+			psk, err = kdf.GetHybridKey(psk, pqcKey)
 		}
 		if err != nil {
 			return err
@@ -102,7 +90,7 @@ func mainLoop(cfg *config.Config) {
 
 func listenIds(cfg *config.Config, skipPush chan<- bool, done chan bool, kmsServer *kms.KMSHandler) {
 	result := make(chan net.ArnikaServerRequest)
-	go net.ArnikaServer(cfg.ListenAddress, result, done)
+	go net.ArnikaServer(cfg, result, done)
 
 	for r := range result {
 		go func() {
@@ -146,16 +134,14 @@ func pushIds(cfg *config.Config, skipPush <-chan bool, kmsServer *kms.KMSHandler
 		default:
 			// get key_id and send
 			log.Printf("--> MASTER: fetch key_id from %s\n", cfg.KMSURL)
-
 			key, err := kmsServer.GetNewKey()
 
 			var kmsKey string
 			var peerRequest net.ArnikaServerRequest
-
 			switch cfg.KMSMode {
 			case config.KmsStrict:
 				if err != nil {
-					// retry until success
+					// retry KMS until success
 					log.Println(err.Error())
 					time.Sleep(time.Second * time.Duration(fibonacciRecursion((retriesKms+20)/10)))
 					retriesKms++

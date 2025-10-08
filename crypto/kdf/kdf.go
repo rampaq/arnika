@@ -3,6 +3,8 @@ package kdf
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
+	"bufio"
 	"io"
 
 	"golang.org/x/crypto/hkdf"
@@ -80,3 +82,15 @@ func GetPQCSubkey(pqcKey string, keyType PqcSubkeyType) (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(derivedKey), nil
 }
+
+func GetPQCMasterKey(pqcKeyFile string) (string, error) {
+	file, err := os.Open(pqcKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("cannot open pqc file: %w", err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Scan()
+	return scanner.Text(), nil
+}
+

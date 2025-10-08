@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/arnika-project/arnika/config"
+	"github.com/arnika-project/arnika/crypto/auth"
+	"github.com/arnika-project/arnika/crypto/kdf"
 )
 
 type ArnikaServerRequest struct {
@@ -20,7 +22,16 @@ type ArnikaServerRequest struct {
 	KMSAvailable bool
 }
 
-func ArnikaServer(url string, result chan ArnikaServerRequest, done chan bool) {
+func (req *ArnikaServerRequest) Marshal() string {
+	if req.KMSAvailable {
+		return "kms " + req.KeyID
+	} else {
+		return "pqc"
+	}
+}
+
+
+func ArnikaServer(cfg *config.Config, result chan ArnikaServerRequest, done chan bool) {
 	// defer close(done)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit,
@@ -33,8 +44,8 @@ func ArnikaServer(url string, result chan ArnikaServerRequest, done chan bool) {
 		close(done)
 		close(result)
 	}()
-	log.Printf("TCP Server listening on %s\n", url)
-	ln, err := net.Listen("tcp", url)
+	log.Printf("TCP Server listening on %s\n", cfg.ListenAddress)
+	ln, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		log.Panicln(err.Error())
 		return
@@ -46,7 +57,7 @@ func ArnikaServer(url string, result chan ArnikaServerRequest, done chan bool) {
 				log.Println(err.Error())
 				break
 			}
-			go handleServerConnection(c, result)
+			go handleServerConnection(cfg, c, result)
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
@@ -71,18 +82,62 @@ func ArnikaClient(cfg *config.Config, req ArnikaServerRequest) error {
 		}
 	}()
 
-	if req.KMSAvailable {
-		_, err = c.Write([]byte("kms " + req.KeyID + "\n"))
+	var resp string
+	if !req.KMSAvailable && cfg.KMSMode == config.KmsPQCFallback {
+		pqcKey, err := kdf.GetPQCMasterKey(cfg.PQCPSKFile)
+		if err != nil {
+			return err
+		}
+		authentication, err := auth.New(pqcKey)
+		if err != nil {
+			return err
+		}
+		nonceTag, err := authentication.GetTag("pqc")
+		if err != nil {
+			return err
+		}
+		resp = req.Marshal() + " " + nonceTag
 	} else {
-		_, err = c.Write([]byte("pqc" + "\n"))
+		resp = req.Marshal()
 	}
+
+	_, err = c.Write([]byte(resp + "\n"))
 	if err != nil {
 		return err
 	}
 	return c.SetDeadline(time.Now().Add(time.Millisecond * 100))
 }
 
-func handleServerConnection(c net.Conn, result chan ArnikaServerRequest) {
+func parseRequest(cfg *config.Config, msg string) (*ArnikaServerRequest, error) {
+	switch {
+	case strings.HasPrefix(msg, "pqc "):
+		nonceTag := msg[4:]
+		pqcKey, err := kdf.GetPQCMasterKey(cfg.PQCPSKFile)
+		if err != nil {
+			return nil, err
+		}
+		authentication, err := auth.New(pqcKey)
+		if err != nil {
+			return nil, err
+		}
+		if !authentication.VerifyNonceTag("pqc", nonceTag) {
+			return nil, fmt.Errorf("forged PQC-fallback message")
+		}
+		return &ArnikaServerRequest{KMSAvailable: false, KeyID: ""}, nil
+
+	case strings.HasPrefix(msg, "kms "):
+		keyID := msg[4:]
+		if keyID == "" {
+			return nil, fmt.Errorf("invalid KeyID")
+		}
+		return &ArnikaServerRequest{KMSAvailable: true, KeyID: keyID}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown format")
+	}
+}
+
+func handleServerConnection(cfg *config.Config, c net.Conn, result chan ArnikaServerRequest) {
 	// Check that c is not nil.
 	if c == nil {
 		panic("received nil connection")
@@ -103,28 +158,15 @@ func handleServerConnection(c net.Conn, result chan ArnikaServerRequest) {
 	loopScan:
 		for scanner.Scan() {
 			msg := scanner.Text()
-			if msg == "pqc" {
-				result <- ArnikaServerRequest{KMSAvailable: false, KeyID: ""}
 
-			} else if strings.HasPrefix(msg, "kms ") {
-				parsed := strings.Split(msg, " ")
-				if len(parsed) != 2 {
-					fmt.Println("Invalid kms message")
-					break loopScan
-				}
-				keyID := parsed[1]
-				if keyID == "" {
-					fmt.Println("Invalid keyId")
-					break loopScan
-				}
-				result <- ArnikaServerRequest{KMSAvailable: true, KeyID: keyID}
-
-			} else {
-				fmt.Println("Invalid message")
+			req, err := parseRequest(cfg, msg)
+			if err != nil {
+				fmt.Printf("error during parsing request: %v\n", err)
 				break loopScan
 			}
+			result <- *req
 
-			_, err := c.Write([]byte("ACK" + "\n"))
+			_, err = c.Write([]byte("ACK" + "\n"))
 			if err != nil { // Handle the write error
 				fmt.Println("Failed to write to connection:", err)
 				break loopScan
