@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/arnika-project/arnika/config"
@@ -78,19 +81,24 @@ func main() {
 }
 
 func mainLoop(cfg *config.Config) {
-	done := make(chan bool)
 	skipPush := make(chan bool)
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
 
-	go listenIds(cfg, skipPush, done, kmsServer)
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGTERM,
+		syscall.SIGINT,
+	)
+	defer cancel()
+
+	go listenIds(ctx, cfg, skipPush, kmsServer)
 	go pushIds(cfg, skipPush, kmsServer)
-	<-done
+	<-ctx.Done()
 }
 
-func listenIds(cfg *config.Config, skipPush chan<- bool, done chan bool, kmsServer *kms.KMSHandler) {
+func listenIds(ctx context.Context, cfg *config.Config, skipPush chan<- bool, kmsServer *kms.KMSHandler) {
 	result := make(chan net.ArnikaServerRequest)
-	go net.ArnikaServer(cfg, result, done)
+	go net.ArnikaServer(ctx, cfg, result)
 
 	for r := range result {
 		go func() {

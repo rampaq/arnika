@@ -2,14 +2,11 @@ package net
 
 import (
 	"bufio"
+	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/arnika-project/arnika/config"
@@ -22,55 +19,57 @@ type ArnikaServerRequest struct {
 	KMSAvailable bool
 }
 
-func (req *ArnikaServerRequest) Marshal() string {
+func (req *ArnikaServerRequest) Marshal() (string, error) {
+	if req.KMSAvailable && req.KeyID == "" {
+		return "", fmt.Errorf("invalid request")
+	}
 	if req.KMSAvailable {
-		return "kms " + req.KeyID
+		return "kms " + req.KeyID, nil
 	} else {
-		return "pqc"
+		return "pqc", nil
 	}
 }
 
-
-func ArnikaServer(cfg *config.Config, result chan ArnikaServerRequest, done chan bool) {
-	// defer close(done)
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit,
-		syscall.SIGTERM,
-		syscall.SIGINT,
-	)
-	go func() {
-		<-quit
-		log.Println("TCP Server shutdown")
-		close(done)
-		close(result)
-	}()
+func ArnikaServer(ctx context.Context, cfg *config.Config, result chan<- ArnikaServerRequest) {
+	// ctx, cancel := context.WithCancel(ctx)
 	log.Printf("TCP Server listening on %s\n", cfg.ListenAddress)
 	ln, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		log.Panicln(err.Error())
 		return
 	}
+	defer func() {
+		log.Println("TCP Server shutdown")
+		err = ln.Close()
+		if err != nil {
+			log.Println(err.Error())
+		}
+		close(result)
+	}()
+
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				log.Println(err.Error())
-				break
+				continue
 			}
-			go handleServerConnection(cfg, c, result)
-			time.Sleep(100 * time.Millisecond)
+			// prevent request handling taking too long
+			// exception: when no result reader is present, handleServerConnection blocks indifinitely
+			ctxTimeout, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+			handleServerConnection(ctx, cfg, c, result)
+			<-ctxTimeout.Done() // accept new connections every 100 ms, no more, no less
+			cancel()            // we are always waiting for timeout by design, this will make typechecker happy
 		}
 	}()
-	<-done
-	err = ln.Close()
-	if err != nil {
-		log.Println(err.Error())
-	}
+
+	<-ctx.Done()
 }
 
 func ArnikaClient(cfg *config.Config, req ArnikaServerRequest) error {
-	if req.KMSAvailable && req.KeyID == "" {
-		return fmt.Errorf("KeyID is empty")
+	tcpReq, err := createTCPRequest(cfg, req)
+	if err != nil {
+		return err
 	}
 	c, err := net.DialTimeout("tcp", cfg.ServerAddress, time.Millisecond*100)
 	if err != nil {
@@ -81,31 +80,47 @@ func ArnikaClient(cfg *config.Config, req ArnikaServerRequest) error {
 			c.Close()
 		}
 	}()
-
-	var resp string
-	if !req.KMSAvailable && cfg.KMSMode == config.KmsPQCFallback {
-		pqcKey, err := kdf.GetPQCMasterKey(cfg.PQCPSKFile)
-		if err != nil {
-			return err
-		}
-		authentication, err := auth.New(pqcKey)
-		if err != nil {
-			return err
-		}
-		nonceTag, err := authentication.GetTag("pqc")
-		if err != nil {
-			return err
-		}
-		resp = req.Marshal() + " " + nonceTag
-	} else {
-		resp = req.Marshal()
-	}
-
-	_, err = c.Write([]byte(resp + "\n"))
+	_, err = c.Write(tcpReq)
 	if err != nil {
 		return err
 	}
 	return c.SetDeadline(time.Now().Add(time.Millisecond * 100))
+}
+
+func createTCPRequest(cfg *config.Config, req ArnikaServerRequest) ([]byte, error) {
+	var resp string
+	switch {
+	case req.KMSAvailable:
+		resp_, err := req.Marshal()
+		if err != nil {
+			return nil, err
+		}
+		resp = resp_
+
+	case !req.KMSAvailable && cfg.KMSMode == config.KmsPQCFallback:
+		pqcKey, err := kdf.GetPQCMasterKey(cfg.PQCPSKFile)
+		if err != nil {
+			return nil, err
+		}
+		authentication, err := auth.New(pqcKey)
+		if err != nil {
+			return nil, err
+		}
+		marshal, err := req.Marshal()
+		if err != nil {
+			return nil, err
+		}
+		nonceTag, err := authentication.GetTag(marshal)
+		if err != nil {
+			return nil, err
+		}
+		resp = marshal + " " + nonceTag
+
+	default:
+		return nil, fmt.Errorf("unclear intent")
+	}
+
+	return []byte(resp + "\n"), nil
 }
 
 func parseRequest(cfg *config.Config, msg string) (*ArnikaServerRequest, error) {
@@ -137,8 +152,7 @@ func parseRequest(cfg *config.Config, msg string) (*ArnikaServerRequest, error) 
 	}
 }
 
-func handleServerConnection(cfg *config.Config, c net.Conn, result chan ArnikaServerRequest) {
-	// Check that c is not nil.
+func handleServerConnection(ctx context.Context, cfg *config.Config, c net.Conn, result chan<- ArnikaServerRequest) {
 	if c == nil {
 		panic("received nil connection")
 	}
@@ -146,40 +160,47 @@ func handleServerConnection(cfg *config.Config, c net.Conn, result chan ArnikaSe
 		if r := recover(); r != nil {
 			fmt.Println("Recovered from panic:", r)
 		}
+		if c != nil {
+			c.Close()
+		}
 	}()
-	for {
-		// scan message
-		scanner := bufio.NewScanner(c)
-		// Check that scanner is not nil.
-		if scanner == nil {
-			panic("received nil scanner")
-		}
 
-	loopScan:
-		for scanner.Scan() {
-			msg := scanner.Text()
+	scanner := bufio.NewScanner(c)
+	if scanner == nil {
+		panic("received nil scanner")
+	}
 
-			req, err := parseRequest(cfg, msg)
-			if err != nil {
-				fmt.Printf("error during parsing request: %v\n", err)
-				break loopScan
-			}
-			result <- *req
-
-			_, err = c.Write([]byte("ACK" + "\n"))
-			if err != nil { // Handle the write error
-				fmt.Println("Failed to write to connection:", err)
-				break loopScan
+	msgChan := make(chan string)
+	errChan := make(chan error)
+	go func() {
+		// read a single line only
+		if !scanner.Scan() {
+			if errRead := scanner.Err(); errRead != nil {
+				errChan <- errRead
+				return
 			}
 		}
-		if errRead := scanner.Err(); errRead != nil { // Handle the read error
-			if errRead == io.EOF { // Handle EOF
-				fmt.Println("Connection closed by remote host.")
-				break
-			}
-			// expected
-			// fmt.Println("Failed to read from connection:", errRead)
+		msgChan <- scanner.Text()
+	}()
+
+	select {
+	case errRead := <-errChan:
+		fmt.Printf("Failed to read from connection: %v", errRead)
+
+	case msg := <-msgChan:
+		req, err := parseRequest(cfg, msg)
+		if err != nil {
+			fmt.Printf("error during parsing request: %v\n", err)
+			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		result <- *req
+		_, err = c.Write([]byte("ACK" + "\n"))
+		if err != nil { // Handle the write error
+			fmt.Println("Failed to write to connection:", err)
+		}
+
+	case <-ctx.Done():
+		err := ctx.Err()
+		fmt.Println("Connection handler closed:", err)
 	}
 }
