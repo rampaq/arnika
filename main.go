@@ -98,13 +98,23 @@ func listenIds(cfg *config.Config, skipPush chan<- bool, done chan bool, kmsServ
 	result := make(chan net.ArnikaServerRequest)
 	go net.ArnikaServer(cfg.ListenAddress, result, done)
 
-	for r := range result {
+	for req := range result {
 		go func() {
 			skipPush <- true
 		}()
-		log.Println("<-- BACKUP: received key_id " + r.KeyID)
-		// to stuff with key
-		key, err := kmsServer.GetKeyByID(r.KeyID)
+
+		var (
+			key *kms.Key
+			err error
+		)
+		switch r := req.(type) {
+		case net.ReqestKMSKeyID:
+			log.Println("<-- BACKUP: received key_id " + r.KeyID)
+			key, err = kmsServer.GetKeyByID(r.KeyID)
+		case net.RequestKMSLast:
+			log.Println("<-- BACKUP: received last KMS key request")
+			key, err = kmsServer.GetLastKey()
+		}
 		if err != nil {
 			log.Println(err.Error())
 			time.Sleep(time.Millisecond * 100)
@@ -128,16 +138,44 @@ func pushIds(cfg *config.Config, skipPush <-chan bool, kmsServer *kms.KMSHandler
 			// get key_id and send
 			log.Printf("--> MASTER: fetch key_id from %s\n", cfg.KMSURL)
 
+			var req net.ArnikaServerRequest
 			key, err := kmsServer.GetNewKey()
-			if err != nil {
-				log.Println(err.Error())
-				time.Sleep(time.Second * time.Duration(fibonacciRecursion((retriesKms+20)/10)))
-				retriesKms++
-				continue
+			switch cfg.KMSMode {
+			case config.KmsStrict:
+				if err != nil {
+					log.Println(err.Error())
+					time.Sleep(time.Second * time.Duration(fibonacciRecursion((retriesKms+20)/10)))
+					retriesKms++
+					continue
+				}
+				retriesKms = 0
+				req = net.ReqestKMSKeyID{KeyID: key.GetID()}
+
+			case config.KmsLastFallback:
+				if err != nil {
+					key_, errLastKey := kmsServer.GetLastKey()
+					key = key_
+					if errLastKey != nil {
+						log.Println("--> MASTER: cannot fall back to last KMS key, no valid key was ever received")
+						log.Printf("--> MASTER: %v\n", err.Error())
+						time.Sleep(time.Second * time.Duration(fibonacciRecursion((retriesKms+20)/10)))
+						retriesKms++
+						continue
+					}
+					log.Printf("--> MASTER: could not obtain KMS key, falling back to last valid KMS key")
+					log.Printf("--> MASTER: %v\n", err.Error())
+					req = net.RequestKMSLast{}
+				} else {
+					req = net.ReqestKMSKeyID{KeyID: key.GetID()}
+				}
+			default:
 			}
-			retriesKms = 0
-			log.Printf("--> MASTER: send key_id to %s\n", cfg.ServerAddress)
-			err = net.ArnikaClient(cfg, net.ArnikaServerRequest{KeyID: key.GetID()})
+
+			switch req.(type) {
+			case net.ReqestKMSKeyID:
+				log.Printf("--> MASTER: send key_id to %s\n", cfg.ServerAddress)
+			}
+			err = net.ArnikaClient(cfg, req)
 			if err != nil {
 				log.Println(err.Error())
 			}

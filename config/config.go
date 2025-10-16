@@ -4,7 +4,20 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
+)
+
+// KmsMode sets behaviour when KMS key is not available
+type KmsMode int
+
+const (
+	// When KMS query fails (on either master/slave), abort and retry again
+	KmsStrict KmsMode = iota
+	// When KMS query fails, use latest valid KMS key.
+	// If no valid KMS key was yet exchanged, abort and retry KMS query.
+	// This options notifies the arnika peer that it should use fallback KMS key.
+	KmsLastFallback
 )
 
 // Config contains the configuration values for the arnika service.
@@ -16,6 +29,7 @@ type Config struct {
 	CACertificate          string        // CA_CERTIFICATE, Path to the CA certificate file
 	KMSURL                 string        // KMS_URL, URL of the KMS server
 	KMSHTTPTimeout         time.Duration // KMS_HTTP_TIMEOUT, HTTP connection timeout
+	KMSMode                KmsMode       // KMS_MODE, specify behaviour on KMS errors
 	Interval               time.Duration // INTERVAL, Interval between key updates
 	WireGuardInterface     string        // WIREGUARD_INTERFACE, Name of the WireGuard interface to configure
 	WireguardPeerPublicKey string        // WIREGUARD_PEER_PUBLIC_KEY, Public key of the WireGuard peer
@@ -77,6 +91,18 @@ func Parse() (*Config, error) {
 		}
 		log.Println("PQC enabled")
 	}
+
+	switch strings.ToLower(getEnvOrDefault("KMS_MODE", "")) {
+	case "strict", "":
+		config.KMSMode = KmsStrict
+		log.Println("KMS strict mode enabled")
+	case "last_fallback":
+		config.KMSMode = KmsLastFallback
+		log.Println("KMS fallback mode enabled")
+	default:
+		return nil, fmt.Errorf("unknown KMS_MODE")
+	}
+
 	return config, nil
 }
 
@@ -114,3 +140,4 @@ func getEnv(key string) (string, error) {
 	}
 	return v, nil
 }
+

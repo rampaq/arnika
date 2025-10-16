@@ -58,6 +58,7 @@ func (a *Auth) IsClientCertAuth() bool {
 type KMSHandler struct {
 	baseUrl string
 	conn    *http.Client
+	lastKey *Key
 }
 
 // Key is a KMS generated key.
@@ -106,6 +107,7 @@ func NewKMSServer(url string, timeout int, kmsAuth *Auth) *KMSHandler {
 		tr.TLSClientConfig.RootCAs = caCertPool
 	}
 	return &KMSHandler{
+		lastKey: nil,
 		baseUrl: url,
 		conn: &http.Client{
 			Timeout:   time.Duration(timeout) * time.Second,
@@ -119,7 +121,11 @@ func NewKMSServer(url string, timeout int, kmsAuth *Auth) *KMSHandler {
 // No parameters.
 // Returns a pointer to a Key struct and an error.
 func (q *KMSHandler) GetNewKey() (*Key, error) {
-	return q.kmsRequest("/enc_keys")
+	key, err := q.kmsRequest("/enc_keys")
+	if err == nil {
+		q.lastKey = copyKey(q.lastKey, key)
+	}
+	return key, err
 }
 
 // GetKeyByID fetches a key from a KMS by its ID.
@@ -127,7 +133,18 @@ func (q *KMSHandler) GetNewKey() (*Key, error) {
 // keyID string
 // *Key, error
 func (q *KMSHandler) GetKeyByID(keyID string) (*Key, error) {
-	return q.kmsRequest("/dec_keys?key_ID=" + keyID)
+	key, err := q.kmsRequest("/dec_keys?key_ID=" + keyID)
+	if err == nil {
+		q.lastKey = copyKey(q.lastKey, key)
+	}
+	return key, err
+}
+
+func (q *KMSHandler) GetLastKey() (*Key, error) {
+	if q.lastKey == nil {
+		return nil, fmt.Errorf("no valid key was ever obtained from KMS")
+	}
+	return q.lastKey, nil
 }
 
 // kmsRequest sends a request to the KMS server and returns the response.
@@ -174,4 +191,25 @@ func (k *Key) GetKey() string {
 		return ""
 	}
 	return k.Key
+}
+
+// copy value in `from` to value pointed to by `to`
+// if `to` is nil, new pointer is created and returned
+// if from is nil, nil is returned
+// if both are nil, nil is returned
+// if both are not nil, value is copied and `to` returned
+func copyKey(to *Key, from *Key) *Key {
+	switch {
+	case from == nil && to == nil:
+		return nil
+	case to == nil:
+		to = &Key{}
+		*to = *from
+		return to
+	case from == nil:
+		return nil
+	default:
+		*to = *from
+		return to
+	}
 }
