@@ -81,18 +81,31 @@ func main() {
 
 func mainLoop(cfg *config.Config) {
 	done := make(chan bool)
-	skipPush := make(chan bool)
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
 	wgh, err := wg.SetupWireGuardIF(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey)
-	wgh.AddExpirationTimer(cfg.PSKExpirationInterval)
 
 	if err != nil {
 		log.Fatalf("unable to setup wg interface: %v", err)
 	}
+	wgh.AddExpirationTimer(cfg.PSKExpirationInterval)
 
-	go listenIds(cfg, wgh, kmsServer, skipPush, done)
-	go pushIds(cfg, wgh, kmsServer, skipPush)
+	// peers push key ids in cycles; skipPush skips pushing for current cycle
+	var skipPush chan bool
+	if cfg.ListenAddress != "" && cfg.ServerAddress != "" {
+		skipPush = make(chan bool)
+	} else {
+		skipPush = nil
+	}
+
+	if cfg.ListenAddress != "" {
+		go listenIds(cfg, wgh, kmsServer, skipPush, done)
+	}
+
+	if cfg.ServerAddress != "" {
+		go pushIds(cfg, wgh, kmsServer, skipPush)
+	}
+
 	<-done
 }
 
@@ -101,9 +114,11 @@ func listenIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSH
 	go net.ArnikaServer(cfg.ListenAddress, result, done)
 
 	for req := range result {
-		go func() {
-			skipPush <- true
-		}()
+		if skipPush != nil {
+			go func() {
+				skipPush <- true
+			}()
+		}
 
 		var (
 			key *kms.Key
