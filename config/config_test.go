@@ -74,6 +74,14 @@ func TestParse(t *testing.T) {
 	}
 	t.Setenv("INTERVAL", "1m")
 
+	// Test case 3.1: PSKTimeoutInterval parsing failure
+	t.Setenv("PSK_EXPIRATION_INTERVAL", "invalid")
+	_, err = Parse()
+	if err == nil {
+		t.Error("Expected an error for PSK timeout parsing failure")
+	}
+	t.Setenv("PSK_EXPIRATION_INTERVAL", "1m")
+
 	// Test case 4: PQC keyfile check
 	t.Setenv("PQC_PSK_FILE", "non_existent_file")
 	_, err = Parse()

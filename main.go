@@ -33,7 +33,7 @@ func getPQCKey(pqcKeyFile string) (string, error) {
 	return scanner.Text(), nil
 }
 
-func setPSK(psk string, cfg *config.Config) error {
+func setPSK(psk string, wgh *wg.WireGuardHandler, cfg *config.Config) error {
 	if cfg.UsePQC() {
 		pQCKey, err := getPQCKey(cfg.PQCPSKFile)
 		if err != nil {
@@ -44,11 +44,7 @@ func setPSK(psk string, cfg *config.Config) error {
 			return err
 		}
 	}
-	wireguard, err := wg.NewWireGuardHandler()
-	if err != nil {
-		return err
-	}
-	return wireguard.SetKey(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey, psk)
+	return wgh.SetKey(psk)
 }
 
 func fibonacciRecursion(n int) int {
@@ -88,13 +84,19 @@ func mainLoop(cfg *config.Config) {
 	skipPush := make(chan bool)
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
+	wgh, err := wg.SetupWireGuardIF(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey)
+	wgh.AddExpirationTimer(cfg.PSKExpirationInterval)
 
-	go listenIds(cfg, skipPush, done, kmsServer)
-	go pushIds(cfg, skipPush, kmsServer)
+	if err != nil {
+		log.Fatalf("unable to setup wg interface: %v", err)
+	}
+
+	go listenIds(cfg, wgh, kmsServer, skipPush, done)
+	go pushIds(cfg, wgh, kmsServer, skipPush)
 	<-done
 }
 
-func listenIds(cfg *config.Config, skipPush chan<- bool, done chan bool, kmsServer *kms.KMSHandler) {
+func listenIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan bool, done chan bool) {
 	result := make(chan net.ArnikaServerRequest)
 	go net.ArnikaServer(cfg.ListenAddress, result, done)
 
@@ -120,14 +122,14 @@ func listenIds(cfg *config.Config, skipPush chan<- bool, done chan bool, kmsServ
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
-		err = setPSK(key.GetKey(), cfg)
+		err = setPSK(key.GetKey(), wgh, cfg)
 		if err != nil {
 			log.Println(err.Error())
 		}
 	}
 }
 
-func pushIds(cfg *config.Config, skipPush <-chan bool, kmsServer *kms.KMSHandler) {
+func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan bool) {
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 	retriesKms := 0
@@ -179,7 +181,7 @@ func pushIds(cfg *config.Config, skipPush <-chan bool, kmsServer *kms.KMSHandler
 			if err != nil {
 				log.Println(err.Error())
 			}
-			err = setPSK(key.GetKey(), cfg)
+			err = setPSK(key.GetKey(), wgh, cfg)
 			if err != nil {
 				log.Println(err.Error())
 			}
