@@ -12,6 +12,7 @@ import (
 	"github.com/arnika-project/arnika/kdf"
 	"github.com/arnika-project/arnika/kms"
 	"github.com/arnika-project/arnika/net"
+	"github.com/arnika-project/arnika/net/backoff"
 	wg "github.com/arnika-project/arnika/wireguard"
 )
 
@@ -47,15 +48,6 @@ func setPSK(psk string, wgh *wg.WireGuardHandler, cfg *config.Config) error {
 	return wgh.SetKey(psk)
 }
 
-func fibonacciRecursion(n int) int {
-	if n <= 1 {
-		return n
-	} else if n > 11 {
-		return 120
-	}
-	return fibonacciRecursion(n-1) + fibonacciRecursion(n-2)
-}
-
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	versionLong := flag.Bool("version", false, "print version and exit")
@@ -84,7 +76,6 @@ func mainLoop(cfg *config.Config) {
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
 	wgh, err := wg.SetupWireGuardIF(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey)
-
 	if err != nil {
 		log.Fatalf("unable to setup wg interface: %v", err)
 	}
@@ -147,7 +138,7 @@ func listenIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSH
 func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan bool) {
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
-	retriesKms := 0
+	backoff := backoff.NewFibonacci()
 	for {
 		select {
 		case <-skipPush:
@@ -160,12 +151,11 @@ func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHan
 			switch cfg.KMSMode {
 			case config.KmsStrict:
 				if err != nil {
-					log.Println(err.Error())
-					time.Sleep(time.Second * time.Duration(fibonacciRecursion((retriesKms+20)/10)))
-					retriesKms++
+					backoff.Sleep()
+					backoff.Next()
 					continue
 				}
-				retriesKms = 0
+				backoff.Reset()
 				req = net.ReqestKMSKeyID{KeyID: key.GetID()}
 
 			case config.KmsLastFallback:
@@ -175,8 +165,8 @@ func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHan
 					if errLastKey != nil {
 						log.Println("--> MASTER: cannot fall back to last KMS key, no valid key was ever received")
 						log.Printf("--> MASTER: %v\n", err.Error())
-						time.Sleep(time.Second * time.Duration(fibonacciRecursion((retriesKms+20)/10)))
-						retriesKms++
+						backoff.Sleep()
+						backoff.Next()
 						continue
 					}
 					log.Printf("--> MASTER: could not obtain KMS key, falling back to last valid KMS key")
@@ -196,6 +186,7 @@ func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHan
 			if err != nil {
 				log.Println(err.Error())
 			}
+
 			err = setPSK(key.GetKey(), wgh, cfg)
 			if err != nil {
 				log.Println(err.Error())
