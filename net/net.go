@@ -2,113 +2,194 @@ package net
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/arnika-project/arnika/config"
 	"github.com/google/uuid"
 )
 
-type ArnikaServerRequest interface {
+const (
+	MaxLineLenBytes = 1024
+)
+
+type ArnikaRequest interface {
 	ToBytes() ([]byte, error)
 }
 
-// ReqestKMSKeyID notifies peer to use KMS key with KeyID
-type ReqestKMSKeyID struct {
+// RequestKMSKeyID notifies peer to use KMS key with KeyID
+type RequestKMSKeyID struct {
 	KeyID string
 }
 
-func (r ReqestKMSKeyID) ToBytes() ([]byte, error) {
+func (r RequestKMSKeyID) ToBytes() ([]byte, error) {
 	if r.KeyID == "" {
 		return nil, fmt.Errorf("no value for KeyID specified")
 	}
-	return []byte("kms " + r.KeyID), nil
+	return []byte("KMS " + r.KeyID), nil
 }
 
-// RequestKMSLast notifies peer to use last valid KMS key
-type RequestKMSLast struct{}
+// RequestKMSFallback notifies peer to use last valid KMS key
+type RequestKMSFallback struct{}
 
-func (r RequestKMSLast) ToBytes() ([]byte, error) {
-	return []byte("kms-use-last"), nil
+func (r RequestKMSFallback) ToBytes() ([]byte, error) {
+	return []byte("KMS-FALLBACK-LAST"), nil
 }
 
-func UnmarshalRequest(s string) (ArnikaServerRequest, error) {
-	switch {
-	case strings.HasPrefix(s, "kms "):
-		keyID := s[4:]
+func UnmarshalRequest(s string) (ArnikaRequest, error) {
+	cmd, rest, found := strings.Cut(s, " ")
+	if !found {
+		switch s {
+		case "KMS-FALLBACK-LAST":
+			return RequestKMSFallback{}, nil
+		}
+		return nil, fmt.Errorf("invalid msg format")
+	}
+	switch cmd {
+	case "KMS":
+		keyID := rest
 		if keyID == "" || uuid.Validate(keyID) != nil {
 			return nil, fmt.Errorf("invalid KeyID given")
 		}
-		return ReqestKMSKeyID{KeyID: keyID}, nil
-	case s == "kms-use-last":
-		return RequestKMSLast{}, nil
+		return RequestKMSKeyID{KeyID: keyID}, nil
 	default:
-		return nil, fmt.Errorf("unknown format")
+		return nil, fmt.Errorf("unknown command")
 	}
 }
 
-// ArnikaServer starts a TCP server which runs handleServerConnection on the TCP message and sends the result in `result` channel
-func ArnikaServer(url string, result chan ArnikaServerRequest, done chan bool) {
-	// defer close(done)
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit,
-		syscall.SIGTERM,
-		syscall.SIGINT,
-	)
-	go func() {
-		<-quit
-		log.Println("TCP Server shutdown")
-		close(done)
-		close(result)
-	}()
-	log.Printf("TCP Server listening on %s\n", url)
-	ln, err := net.Listen("tcp", url)
+type ArnikaServer struct {
+	cfg              *config.Config
+	result           chan<- ArnikaRequest
+	readWriteTimeout time.Duration
+}
+
+// NewServer creates new server with default timeout of 15 seconds
+func NewServer(cfg *config.Config, result chan<- ArnikaRequest) *ArnikaServer {
+	return &ArnikaServer{
+		cfg:              cfg,
+		result:           result,
+		readWriteTimeout: 15 * time.Second,
+	}
+}
+
+// SetTimeout sets custom timeout for read & write socket operations; modifies original and returns it
+func (s *ArnikaServer) WithTimeout(readWriteTimeout time.Duration) *ArnikaServer {
+	s.readWriteTimeout = readWriteTimeout
+	return s
+}
+
+// Start a TCP server which listens for connecations and sends the parsed requests in `result` channel
+func (s *ArnikaServer) Start(ctx context.Context) {
+	listen, err := net.Listen("tcp", s.cfg.ListenAddress)
 	if err != nil {
 		log.Panicln(err.Error())
-		return
 	}
+	log.Printf("TCP Server listening on %s\n", s.cfg.ListenAddress)
+	defer func() {
+		log.Println("TCP Server shutdown")
+		err = listen.Close()
+		if err != nil {
+			log.Println(err.Error())
+		}
+		close(s.result)
+	}()
+
 	go func() {
 		for {
-			c, err := ln.Accept()
-			if err != nil {
-				log.Println(err.Error())
-				break
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				// listen.Close() causes Accept to return with error
+				c, err := listen.Accept()
+				if err != nil {
+					log.Println(err.Error())
+					continue
+				}
+				go s.handleServerConnection(ctx, c)
 			}
-			go handleServerConnection(c, result)
-			time.Sleep(100 * time.Millisecond)
 		}
 	}()
-	<-done
-	err = ln.Close()
-	if err != nil {
-		log.Println(err.Error())
+
+	<-ctx.Done()
+}
+
+// handleServerConnection closes connection c when done
+// timeout of ReadWriteTimeout for network read/write
+// no timeout for result channel
+func (s *ArnikaServer) handleServerConnection(ctx context.Context, conn net.Conn) {
+	defer conn.Close()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// time out in one minute if no data is received.
+	// the error can be safely ignored.
+	_ = conn.SetReadDeadline(time.Now().Add(s.readWriteTimeout))
+
+	lim := &io.LimitedReader{
+		R: conn,
+		N: MaxLineLenBytes,
+	}
+	scanner := bufio.NewScanner(lim)
+
+	msgChan := make(chan string)
+	go func() {
+		// read a single line only
+		if !scanner.Scan() {
+			if errRead := scanner.Err(); errRead != nil {
+				fmt.Printf("Failed to read from connection: %v\n", errRead)
+				cancel()
+				return
+			}
+		}
+		msgChan <- scanner.Text()
+	}()
+
+	select {
+	case msg := <-msgChan:
+		req, err := UnmarshalRequest(msg)
+		if err != nil {
+			log.Printf("Error during parsing request: %v\n", err)
+			return
+		}
+		s.result <- req
+		_, err = conn.Write([]byte("ACK" + "\n"))
+		if err != nil {
+			log.Println("Failed to write to connection:", err)
+		}
+		// for multiline messages:
+		// reset number of remaining bytes in LimitReader
+		// lim.N = MaxLineLenBytes
+		// reset the read deadline
+		// _ = conn.SetReadDeadline(time.Now().Add(ReadWriteTimeout))
+
+	case <-ctx.Done():
+		err := ctx.Err()
+		log.Println("Connection handler closed:", err)
 	}
 }
 
 // ArnikaClient sends a key request to peer's TCP server
-func ArnikaClient(cfg *config.Config, req ArnikaServerRequest) error {
+func ArnikaClient(cfg *config.Config, req ArnikaRequest) error {
 	reqBytes, err := req.ToBytes()
 	if err != nil {
 		return fmt.Errorf("error during serialization: %w", err)
 	}
-	c, err := net.DialTimeout("tcp", cfg.ServerAddress, time.Millisecond*100)
+	c, err := net.DialTimeout("tcp", cfg.ServerAddress, time.Second)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if c != nil {
-			c.Close()
-		}
+		c.Close()
 	}()
 
-	reqBytes = append(reqBytes, []byte("\n")...)
+	reqBytes = append(reqBytes, '\n')
 	_, err = c.Write(reqBytes)
 	if err != nil {
 		return err
@@ -116,48 +197,3 @@ func ArnikaClient(cfg *config.Config, req ArnikaServerRequest) error {
 	return c.SetDeadline(time.Now().Add(time.Millisecond * 100))
 }
 
-func handleServerConnection(c net.Conn, result chan ArnikaServerRequest) {
-	// Check that c is not nil.
-	if c == nil {
-		panic("received nil connection")
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			log.Println("Recovered from panic:", r)
-		}
-	}()
-	for {
-		// scan message
-		scanner := bufio.NewScanner(c)
-		// Check that scanner is not nil.
-		if scanner == nil {
-			panic("received nil scanner")
-		}
-
-	loopScan:
-		for scanner.Scan() {
-			msg := scanner.Text()
-			r, err := UnmarshalRequest(msg)
-			if err != nil {
-				log.Println("Failed to parse request:", err)
-				break loopScan
-			}
-			result <- r
-
-			_, err = c.Write([]byte("ACK" + "\n"))
-			if err != nil { // Handle the write error
-				log.Println("Failed to write to connection:", err)
-				break loopScan
-			}
-		}
-		if errRead := scanner.Err(); errRead != nil { // Handle the read error
-			if errRead == io.EOF { // Handle EOF
-				log.Println("Connection closed by remote host.")
-				break
-			}
-			// expected
-			// fmt.Println("Failed to read from connection:", errRead)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}

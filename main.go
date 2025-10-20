@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/arnika-project/arnika/config"
@@ -72,7 +75,6 @@ func main() {
 }
 
 func mainLoop(cfg *config.Config) {
-	done := make(chan bool)
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
 	wgh, err := wg.SetupWireGuardIF(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey)
@@ -89,20 +91,27 @@ func mainLoop(cfg *config.Config) {
 		skipPush = nil
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGTERM,
+		syscall.SIGINT,
+	)
+	defer cancel()
+
 	if cfg.ListenAddress != "" {
-		go listenIds(cfg, wgh, kmsServer, skipPush, done)
+		go listenIds(ctx, cfg, wgh, kmsServer, skipPush)
 	}
 
 	if cfg.ServerAddress != "" {
-		go pushIds(cfg, wgh, kmsServer, skipPush)
+		go pushIds(ctx, cfg, wgh, kmsServer, skipPush)
 	}
 
-	<-done
+	<-ctx.Done()
 }
 
-func listenIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan bool, done chan bool) {
-	result := make(chan net.ArnikaServerRequest)
-	go net.ArnikaServer(cfg.ListenAddress, result, done)
+func listenIds(ctx context.Context, cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan<- bool) {
+	result := make(chan net.ArnikaRequest)
+	server := net.NewServer(cfg, result)
+	go server.Start(ctx)
 
 	for req := range result {
 		if skipPush != nil {
@@ -116,10 +125,10 @@ func listenIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSH
 			err error
 		)
 		switch r := req.(type) {
-		case net.ReqestKMSKeyID:
+		case net.RequestKMSKeyID:
 			log.Println("<-- BACKUP: received key_id " + r.KeyID)
 			key, err = kmsServer.GetKeyByID(r.KeyID)
-		case net.RequestKMSLast:
+		case net.RequestKMSFallback:
 			log.Println("<-- BACKUP: received last KMS key request")
 			key, err = kmsServer.GetLastKey()
 		}
@@ -135,18 +144,21 @@ func listenIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSH
 	}
 }
 
-func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan bool) {
+func pushIds(ctx context.Context, cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHandler, skipPush chan bool) {
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 	backoff := backoff.NewFibonacci()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-skipPush:
+			// do not push and wait for next timer tick
 		default:
-			// get key_id and send
+			// request key from KMS, notify peer and set PSK
 			log.Printf("--> MASTER: fetch key_id from %s\n", cfg.KMSURL)
 
-			var req net.ArnikaServerRequest
+			var req net.ArnikaRequest
 			key, err := kmsServer.GetNewKey()
 			switch cfg.KMSMode {
 			case config.KmsStrict:
@@ -156,13 +168,14 @@ func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHan
 					continue
 				}
 				backoff.Reset()
-				req = net.ReqestKMSKeyID{KeyID: key.GetID()}
+				req = net.RequestKMSKeyID{KeyID: key.GetID()}
 
 			case config.KmsLastFallback:
 				if err != nil {
 					key_, errLastKey := kmsServer.GetLastKey()
 					key = key_
 					if errLastKey != nil {
+						log.Println("--> MASTER:", err.Error())
 						log.Println("--> MASTER: cannot fall back to last KMS key, no valid key was ever received")
 						log.Printf("--> MASTER: %v\n", err.Error())
 						backoff.Sleep()
@@ -171,15 +184,14 @@ func pushIds(cfg *config.Config, wgh *wg.WireGuardHandler, kmsServer *kms.KMSHan
 					}
 					log.Printf("--> MASTER: could not obtain KMS key, falling back to last valid KMS key")
 					log.Printf("--> MASTER: %v\n", err.Error())
-					req = net.RequestKMSLast{}
+					req = net.RequestKMSFallback{}
 				} else {
-					req = net.ReqestKMSKeyID{KeyID: key.GetID()}
+					req = net.RequestKMSKeyID{KeyID: key.GetID()}
 				}
-			default:
 			}
 
 			switch req.(type) {
-			case net.ReqestKMSKeyID:
+			case net.RequestKMSKeyID:
 				log.Printf("--> MASTER: send key_id to %s\n", cfg.ServerAddress)
 			}
 			err = net.ArnikaClient(cfg, req)
