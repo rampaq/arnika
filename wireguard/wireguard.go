@@ -2,6 +2,7 @@ package wg
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -10,6 +11,16 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// VPN represents encrypted network interface (wireguard)
+type VPN interface {
+	// SetKey sets pre-shared encryption key
+	SetKey(key string) error
+	// Deactivates peer commication; (Wireguard might take up-to two minutes)
+	DeactivatePeer() error
+	// Get interface public key (our pubkey)
+	// GetPublicKey() (string, error)
+}
 
 // WireGuardHandler provides an interface to the WireGuard client.
 type WireGuardHandler struct {
@@ -64,7 +75,7 @@ func SetupWireGuardIF(ifname string, peerPublicKey string) (*WireGuardHandler, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to set random PSK during setup: %w", err)
 	}
-	fmt.Printf("set random key for peer\n")
+	log.Printf("set random key for peer\n")
 	return &wgh, nil
 }
 
@@ -82,10 +93,10 @@ func (wg *WireGuardHandler) AddExpirationTimer(dur time.Duration) bool {
 	wg.timer = time.AfterFunc(math.MaxInt64, func() {
 		err := wg.DeactivatePeer()
 		if err != nil {
-			fmt.Printf("Error in ExpirationTimer function: %v\n", err)
+			log.Printf("Error in ExpirationTimer function: %v\n", err)
 			return
 		}
-		fmt.Printf("No PSK set during %s, peer disabled\n", dur)
+		log.Printf("No PSK set during %s, peer disabled\n", dur)
 	})
 	wg.timer.Stop()
 	return true
@@ -130,7 +141,7 @@ func (wg *WireGuardHandler) DeactivatePeer() error {
 	err := wg.setRandomKey()
 	if err != nil {
 		// failsafe
-		fmt.Printf("Failed to set random PSK, deactivating %s\n", wg.ifname)
+		log.Printf("Failed to set random PSK, deactivating %s\n", wg.ifname)
 		err = wg.interfaceDown()
 		if err != nil {
 			return fmt.Errorf("failed to set random PSK & failed to deactivate interface: %w", err)

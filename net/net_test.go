@@ -128,7 +128,7 @@ func TestArnikaClientRequest(t *testing.T) {
 	for _, tt := range tests {
 		testname := fmt.Sprintf("%v,%v", tt.requestStruct, tt.responseWant)
 		t.Run(testname, func(t *testing.T) {
-			err := ArnikaClient(cfg, tt.requestStruct)
+			err := NetClient(cfg, tt.requestStruct)
 			if err != nil {
 				// could not send -> no response will be received -> test passed
 				if tt.responseWant != nil {

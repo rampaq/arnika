@@ -62,29 +62,29 @@ func UnmarshalRequest(s string) (ArnikaRequest, error) {
 	}
 }
 
-type ArnikaServer struct {
+type NetServer struct {
 	cfg              *config.Config
 	result           chan<- ArnikaRequest
 	readWriteTimeout time.Duration
 }
 
 // NewServer creates new server with default timeout of 15 seconds
-func NewServer(cfg *config.Config, result chan<- ArnikaRequest) *ArnikaServer {
-	return &ArnikaServer{
+func NewServer(cfg *config.Config, result chan<- ArnikaRequest) *NetServer {
+	return &NetServer{
 		cfg:              cfg,
 		result:           result,
 		readWriteTimeout: 15 * time.Second,
 	}
 }
 
-// SetTimeout sets custom timeout for read & write socket operations; modifies original and returns it
-func (s *ArnikaServer) WithTimeout(readWriteTimeout time.Duration) *ArnikaServer {
+// WithTimeout sets custom timeout for read & write socket operations; modifies original and returns it
+func (s *NetServer) WithTimeout(readWriteTimeout time.Duration) *NetServer {
 	s.readWriteTimeout = readWriteTimeout
 	return s
 }
 
 // Start a TCP server which listens for connecations and sends the parsed requests in `result` channel
-func (s *ArnikaServer) Start(ctx context.Context) {
+func (s *NetServer) Start(ctx context.Context) {
 	listen, err := net.Listen("tcp", s.cfg.ListenAddress)
 	if err != nil {
 		log.Panicln(err.Error())
@@ -122,7 +122,7 @@ func (s *ArnikaServer) Start(ctx context.Context) {
 // handleServerConnection closes connection c when done
 // timeout of ReadWriteTimeout for network read/write
 // no timeout for result channel
-func (s *ArnikaServer) handleServerConnection(ctx context.Context, conn net.Conn) {
+func (s *NetServer) handleServerConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -175,8 +175,8 @@ func (s *ArnikaServer) handleServerConnection(ctx context.Context, conn net.Conn
 	}
 }
 
-// ArnikaClient sends a key request to peer's TCP server
-func ArnikaClient(cfg *config.Config, req ArnikaRequest) error {
+// NetClient sends a key request to peer's TCP server
+func NetClient(cfg *config.Config, req ArnikaRequest) error {
 	reqBytes, err := req.ToBytes()
 	if err != nil {
 		return fmt.Errorf("error during serialization: %w", err)

@@ -6,8 +6,8 @@ import "time"
 type Backoff interface {
 	// Next increases the number of retries by one
 	Next()
-	// Sleep sleeps for a duration based on number of retries
-	Sleep()
+	// Duration returns a duration of the current backoff time. Use this with time.Sleep() or time.After()
+	Duration() time.Duration
 	// Resets the retry counter
 	Reset()
 }
@@ -26,27 +26,34 @@ type ExpBackoff struct {
 	retry int
 }
 
-func NewExponential() ExpBackoff {
-	return ExpBackoff{0}
+func NewExponential() Backoff {
+	return &ExpBackoff{0}
 }
 
-// Next increments retry counter and sleeps
 func (b *ExpBackoff) Next() {
+	b.retry++
+}
+
+func (b *ExpBackoff) Reset() {
+	b.retry = 0
+}
+
+func (b *ExpBackoff) Duration() time.Duration {
 	var d int
 	if 0 <= b.retry && b.retry <= 6 {
 		d = exp[b.retry]
 	} else {
 		d = 120
 	}
-	time.Sleep(time.Second * time.Duration(d))
-}
-
-func NewFibonacci() Backoff {
-	return &FibonacciBackoff{0}
+	return time.Second * time.Duration(d)
 }
 
 type FibonacciBackoff struct {
 	retry int
+}
+
+func NewFibonacci() Backoff {
+	return &FibonacciBackoff{0}
 }
 
 func (b *FibonacciBackoff) Next() {
@@ -57,9 +64,9 @@ func (b *FibonacciBackoff) Reset() {
 	b.retry = 0
 }
 
-func (b *FibonacciBackoff) Sleep() {
-	d := fibonacciRecursion((20 + b.retry) / 10)
-	time.Sleep(time.Second * time.Duration(d))
+func (b *FibonacciBackoff) Duration() time.Duration {
+	d := fibonacciRecursion((20 + b.retry)/10)
+	return time.Second * time.Duration(d)
 }
 
 func fibonacciRecursion(n int) int {

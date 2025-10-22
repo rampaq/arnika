@@ -12,6 +12,16 @@ import (
 	"time"
 )
 
+// KeyStore represents Key Management module
+type KeyStore interface {
+	// Obtain new key
+	GetNewKey() (*Key, error)
+	// Get key that was previously obtained (by the other peer) by its ID
+	GetKeyByID(keyID string) (*Key, error)
+	// When KMS not available, supply a fallback key
+	GetFallbackKey() (*Key, error)
+}
+
 // Auth holds the configuration for authentication with a KMS server.
 //
 // cert: the path to the client certificate file.
@@ -140,7 +150,7 @@ func (q *KMSHandler) GetKeyByID(keyID string) (*Key, error) {
 	return key, err
 }
 
-func (q *KMSHandler) GetLastKey() (*Key, error) {
+func (q *KMSHandler) GetFallbackKey() (*Key, error) {
 	if q.lastKey == nil {
 		return nil, fmt.Errorf("no valid key was ever obtained from KMS")
 	}
