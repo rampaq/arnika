@@ -1,6 +1,7 @@
 package wg
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"math"
@@ -19,7 +20,7 @@ type VPN interface {
 	// Deactivates peer commication; (Wireguard might take up-to two minutes)
 	DeactivatePeer() error
 	// Get interface public key (our pubkey)
-	// GetPublicKey() (string, error)
+	GetPublicKey() (string, error)
 }
 
 // WireGuardHandler provides an interface to the WireGuard client.
@@ -77,6 +78,15 @@ func SetupWireGuardIF(ifname string, peerPublicKey string) (*WireGuardHandler, e
 	}
 	log.Printf("set random key for peer\n")
 	return &wgh, nil
+}
+
+func (wg *WireGuardHandler) GetPublicKey() (string, error) {
+	dev, err := wg.conn.Device(wg.ifname)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(dev.PublicKey[:]), nil
+
 }
 
 // AddExpirationTimer adds an timer which deactivates peer when SetKey is not called during duration dur.

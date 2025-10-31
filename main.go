@@ -54,30 +54,17 @@ func mainLoop(cfg *config.Config) {
 	}
 	wgh.AddExpirationTimer(cfg.PSKExpirationInterval)
 
-	// peers push key ids in cycles; skipPush skips pushing for current cycle
-	var skipPush chan bool
-	if cfg.ListenAddress != "" && cfg.ServerAddress != "" {
-		skipPush = make(chan bool, 1)
-	} else {
-		skipPush = nil
-	}
-
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGTERM,
 		syscall.SIGINT,
 	)
 	defer cancel()
 
-	if cfg.ListenAddress != "" {
-		server := peer.NewServer(cfg, wgh, kmsServer)
-		go server.Start(ctx, skipPush)
+	ourPeer, err := peer.NewPeer(cfg, wgh, kmsServer)
+	if err != nil {
+		log.Fatal("unable to initialize our peer:", err)
 	}
-
-	if cfg.ServerAddress != "" {
-		client := peer.NewClient(cfg, wgh, kmsServer)
-		go client.Start(ctx, skipPush)
-	}
+	go ourPeer.Start(ctx)
 
 	<-ctx.Done()
 }
-

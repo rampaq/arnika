@@ -25,28 +25,69 @@ func (e KMSError) Error() string {
 	return fmt.Sprintf("failed when obtaining KMS key:%s", e.Message)
 }
 
-type ArnikaServer struct {
+type arnikaPeer struct {
+	r *responder
+	s *initiator
+}
+
+// NewPeer creates an Arnika peer who initiates/responds.
+// Right now, it assigns initiator/responder statically.
+// TODO:
+//   - use proper dynamic initiator/responder, similar to Wireguard.
+//     In case there are some assymetric KMS problems,
+//     dynamic initiator/responder is better
+//   - this would require advanced handling of race conditions of type
+//     probably requiring adding timestamps
+//     1. A->B: key_id1; takes long time
+//     then
+//     2. A<-B: key_id2; fast
+//     3. A: ACK (for 2)
+//     4. B: ACK (for 1)
+func NewPeer(cfg *config.Config, wgh wg.VPN, kmsServer kms.KeyStore) (*arnikaPeer, error) {
+	isInitiator := false
+	switch {
+	case cfg.ListenAddress != "" && cfg.ServerAddress != "":
+		ourPubkey, err := wgh.GetPublicKey()
+		if err != nil {
+			return nil, fmt.Errorf("cannot get our wg pubkey: %w", err)
+		}
+		// lower pubkey wins initiator
+		isInitiator = ourPubkey < cfg.WireguardPeerPublicKey
+	case cfg.ListenAddress != "":
+		isInitiator = false
+	case cfg.ServerAddress != "":
+		isInitiator = true
+	default:
+		return nil, fmt.Errorf("invalid Listen&Server Address")
+	}
+	p := &arnikaPeer{}
+	if isInitiator {
+		p.s = &initiator{cfg: cfg, wgh: wgh, kmsServer: kmsServer}
+	} else {
+		p.r = &responder{cfg: cfg, wgh: wgh, kmsServer: kmsServer}
+	}
+	return p, nil
+}
+
+// Start start the peer; either as initiator or responder
+// The call is blocking
+func (p *arnikaPeer) Start(ctx context.Context) {
+	if p.r != nil {
+		p.r.Start(ctx)
+	} else if p.s != nil {
+		p.s.Start(ctx)
+	}
+}
+
+type responder struct {
 	cfg       *config.Config
 	wgh       wg.VPN
 	kmsServer kms.KeyStore
 	netServer *net.NetServer
 }
 
-func NewServer(
-	cfg *config.Config,
-	wgh wg.VPN,
-	kmsServer kms.KeyStore,
-) ArnikaServer {
-	return ArnikaServer{
-		cfg:       cfg,
-		wgh:       wgh,
-		kmsServer: kmsServer,
-	}
-}
-
-// Start the Arnika server; listen for messages from Arnika client and set PSK accordingly
-// skipPush should be a buffered channel; this function does not wait for skipPush receivers
-func (s *ArnikaServer) Start(ctx context.Context, skipPush chan<- bool) {
+// Start our receiver; listen for messages from their initiator and set PSK accordingly
+func (s *responder) Start(ctx context.Context) {
 	result := make(chan net.ArnikaRequest)
 	s.netServer = net.NewServer(s.cfg, result)
 	// start network server
@@ -57,19 +98,12 @@ func (s *ArnikaServer) Start(ctx context.Context, skipPush chan<- bool) {
 		case <-ctx.Done():
 			return
 		case req := <-result:
-			if skipPush != nil {
-				// do not block when skipPush has no receiver
-				select {
-				case skipPush <- true:
-				default:
-				}
-			}
 			s.processRequest(req)
 		}
 	}
 }
 
-func (s *ArnikaServer) processRequest(req net.ArnikaRequest) error {
+func (s *responder) processRequest(req net.ArnikaRequest) error {
 	var (
 		key *kms.Key
 		err error
@@ -98,26 +132,14 @@ func (s *ArnikaServer) processRequest(req net.ArnikaRequest) error {
 	return nil
 }
 
-type ArnikaClient struct {
+type initiator struct {
 	cfg       *config.Config
 	wgh       wg.VPN
 	kmsServer kms.KeyStore
 }
 
-func NewClient(
-	cfg *config.Config,
-	wgh wg.VPN,
-	kmsServer kms.KeyStore,
-) ArnikaClient {
-	return ArnikaClient{
-		cfg,
-		wgh,
-		kmsServer,
-	}
-}
-
-// Start the Arnika client; push messages for Arnika server and set PSK accordingly
-func (c *ArnikaClient) Start(ctx context.Context, skipPush <-chan bool) {
+// Start our initiator; push messages for their responder and set PSK accordingly
+func (c *initiator) Start(ctx context.Context) {
 	ticker := time.NewTicker(c.cfg.Interval)
 	defer ticker.Stop()
 	backoff := backoff.NewFibonacci()
@@ -125,18 +147,13 @@ func (c *ArnikaClient) Start(ctx context.Context, skipPush <-chan bool) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-skipPush:
-			// do not push and wait for next timer tick
-			// TODO: ?
-			cancellableWait(ctx, ticker.C)
 		default:
 			err := c.sendRequestAndSetPSK()
 			if err != nil {
 				log.Println("--> MASTER err:", err)
 			}
 			if errors.As(err, &KMSError{}) {
-				ctxDoneErr := cancellableWait(ctx, time.After(backoff.Duration()))
-				if ctxDoneErr != nil {
+				if cancellableWait(ctx, time.After(backoff.Duration())) != nil {
 					return
 				}
 				backoff.Next()
@@ -149,19 +166,10 @@ func (c *ArnikaClient) Start(ctx context.Context, skipPush <-chan bool) {
 	}
 }
 
-func cancellableWait(ctx context.Context, tickerChan <-chan time.Time) error {
-	select {
-	case <-tickerChan:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 // request key from KMS, notify peer and set PSK
 // returns KMS error if KMS times out
 // return other error if peer notification or setting PSK failed
-func (c *ArnikaClient) sendRequestAndSetPSK() error {
+func (c *initiator) sendRequestAndSetPSK() error {
 	log.Printf("--> MASTER: fetch key_id from %s\n", c.cfg.KMSURL)
 	var req net.ArnikaRequest
 	key, err := c.kmsServer.GetNewKey()
@@ -207,6 +215,15 @@ func (c *ArnikaClient) sendRequestAndSetPSK() error {
 		return fmt.Errorf("cannot set PSK: %v; error during contacting Arnika: %v", err, errClient)
 	}
 	return errClient
+}
+
+func cancellableWait(ctx context.Context, tickerChan <-chan time.Time) error {
+	select {
+	case <-tickerChan:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func getPQCKey(pqcKeyFile string) (string, error) {
