@@ -171,32 +171,36 @@ func (c *initiator) Start(ctx context.Context) {
 // return other error if peer notification or setting PSK failed
 func (c *initiator) sendRequestAndSetPSK() error {
 	log.Printf("--> MASTER: fetch key_id from %s\n", c.cfg.KMSURL)
-	var req net.ArnikaRequest
 	key, err := c.kmsServer.GetNewKey()
-	switch c.cfg.KMSMode {
-	case config.KmsStrict:
-		if err != nil {
+
+	var req net.ArnikaRequest
+	if err == nil {
+		// no error
+		req = net.RequestKMSKeyID{KeyID: key.GetID()}
+	} else {
+		// new key error
+		switch c.cfg.KMSMode {
+		case config.KmsStrict:
 			errKms := err
 			err = c.wgh.DeactivatePeer()
 			if err != nil {
 				panic(fmt.Errorf("could not deactivate peer when KMS not available: %v", err))
 			}
 			return KMSError{errKms.Error()}
-		}
-		req = net.RequestKMSKeyID{KeyID: key.GetID()}
 
-	case config.KmsLastFallback:
-		if err != nil {
-			key_, errLastKey := c.kmsServer.GetFallbackKey()
-			key = key_
-			if errLastKey != nil {
-				return KMSError{fmt.Sprintf("cannot fallback, no KMS key ever received: %s", err.Error())}
+		case config.KmsLastFallback:
+			fallbackKey, errFallback := c.kmsServer.GetFallbackKey()
+			if errFallback != nil {
+				err = c.wgh.DeactivatePeer()
+				if err != nil {
+					panic(fmt.Errorf("could not deactivate peer when KMS not available: %v", err))
+				}
+				return KMSError{fmt.Sprintf("cannot fallback, no KMS key ever received: %s", errFallback.Error())}
 			}
+			key = fallbackKey
 			log.Printf("--> MASTER: could not obtain KMS key, falling back to last valid KMS key\n")
 			log.Printf("--> MASTER: falling back due to: %s\n", err.Error())
 			req = net.RequestKMSFallback{}
-		} else {
-			req = net.RequestKMSKeyID{KeyID: key.GetID()}
 		}
 	}
 
