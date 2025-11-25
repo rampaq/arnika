@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/arnika-project/arnika/config"
@@ -66,6 +67,7 @@ type NetServer struct {
 	cfg              *config.Config
 	result           chan<- ArnikaRequest
 	readWriteTimeout time.Duration
+	wg               sync.WaitGroup
 }
 
 // NewServer creates new server with default timeout of 15 seconds
@@ -91,6 +93,8 @@ func (s *NetServer) Start(ctx context.Context) {
 	}
 	log.Printf("TCP Server listening on %s\n", s.cfg.ListenAddress)
 	defer func() {
+		// wait until all handlers are done to clean up
+		s.wg.Wait()
 		log.Println("TCP Server shutdown")
 		err = listen.Close()
 		if err != nil {
@@ -109,7 +113,7 @@ func (s *NetServer) Start(ctx context.Context) {
 				c, err := listen.Accept()
 				if err != nil {
 					log.Println(err.Error())
-					continue
+					break
 				}
 				go s.handleServerConnection(ctx, c)
 			}
@@ -124,6 +128,9 @@ func (s *NetServer) Start(ctx context.Context) {
 // no timeout for result channel
 func (s *NetServer) handleServerConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+
+	s.wg.Add(1)
+	defer s.wg.Done()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -189,11 +196,12 @@ func NetClient(cfg *config.Config, req ArnikaRequest) error {
 		c.Close()
 	}()
 
+	err = c.SetDeadline(time.Now().Add(time.Millisecond * 100))
+	if err != nil {
+		return fmt.Errorf("could not set conn timeout: %w", err)
+	}
+
 	reqBytes = append(reqBytes, '\n')
 	_, err = c.Write(reqBytes)
-	if err != nil {
-		return err
-	}
-	return c.SetDeadline(time.Now().Add(time.Millisecond * 100))
+	return err
 }
-

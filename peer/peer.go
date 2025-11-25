@@ -63,8 +63,10 @@ func NewPeer(cfg *config.Config, wgh wg.VPN, kmsServer kms.KeyStore) (*arnikaPee
 	p := &arnikaPeer{}
 	if isInitiator {
 		p.s = &initiator{cfg: cfg, wgh: wgh, kmsServer: kmsServer}
+		log.Print("role: initiator")
 	} else {
 		p.r = &responder{cfg: cfg, wgh: wgh, kmsServer: kmsServer}
+		log.Print("role: responder")
 	}
 	return p, nil
 }
@@ -170,7 +172,7 @@ func (c *initiator) Start(ctx context.Context) {
 // returns KMS error if KMS times out
 // return other error if peer notification or setting PSK failed
 func (c *initiator) sendRequestAndSetPSK() error {
-	log.Printf("--> MASTER: fetch key_id from %s\n", c.cfg.KMSURL)
+	log.Println("--> MASTER: fetch key_id")
 	key, err := c.kmsServer.GetNewKey()
 
 	var req net.ArnikaRequest
@@ -210,7 +212,7 @@ func (c *initiator) sendRequestAndSetPSK() error {
 	}
 	errClient := net.NetClient(c.cfg, req)
 	if errClient != nil {
-		log.Printf("--> MASTER: error while contacting Arnika Server: %v\n", err)
+		log.Printf("--> MASTER: error while contacting Arnika Server: %v\n", errClient)
 	}
 
 	// always set new PSK, even if NetClient was not succesful
