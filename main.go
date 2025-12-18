@@ -48,7 +48,7 @@ func main() {
 func mainLoop(cfg *config.Config) {
 	kmsAuth := kms.NewClientCertificateAuth(cfg.Certificate, cfg.PrivateKey, cfg.CACertificate)
 	kmsServer := kms.NewKMSServer(cfg.KMSURL, int(cfg.KMSHTTPTimeout.Seconds()), kmsAuth)
-	wgh, err := wg.SetupWireGuardIF(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey)
+	wgh, err := wg.SetupWireGuardIF(cfg.WireGuardInterface, cfg.WireguardPeerPublicKey, cfg.KeyUsageLimit)
 	if err != nil {
 		log.Fatalf("unable to setup wg interface: %v", err)
 	}

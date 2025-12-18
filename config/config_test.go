@@ -50,6 +50,8 @@ func TestParse(t *testing.T) {
 		Certificate:            "", // Default value for Certificate
 		PrivateKey:             "", // Default value for PrivateKey
 		CACertificate:          "", // Default value for CACertificate
+		KMSMode:				KmsStrict,
+		KeyUsageLimit:			1,
 		KMSURL:                 "https://example.com",
 		Interval:               time.Second * 10, // Default value for Interval
 		KMSHTTPTimeout:         time.Second * 10, // Default value for KMSHTTPTimeout
@@ -106,6 +108,7 @@ func TestParse(t *testing.T) {
 		t.Error("Invalid parsing: default KMS mode is not strict mode")
 	}
 
+	t.Setenv("KEY_USAGE_LIMIT", "")
 	t.Setenv("KMS_MODE", "STRICT")
 	parsed, err = Parse()
 	if err != nil {
@@ -114,7 +117,11 @@ func TestParse(t *testing.T) {
 	if parsed.KMSMode != KmsStrict {
 		t.Error("Invalid parsing: KMS_MODE=STRICT does not set strict mode")
 	}
+	if parsed.KeyUsageLimit != 1 {
+		t.Error("Invalid parsing: KEY_USAGE_LIMIT should default to 1 for KMS_MODE=STRICT")
+	}
 
+	t.Setenv("KEY_USAGE_LIMIT", "")
 	t.Setenv("KMS_MODE", "LAST_FALLBACK")
 	parsed, err = Parse()
 	if err != nil {
@@ -122,6 +129,9 @@ func TestParse(t *testing.T) {
 	}
 	if parsed.KMSMode != KmsLastFallback {
 		t.Error("Invalid parsing: KMS_MODE=LAST_FALLBACK does not set last fallback mode")
+	}
+	if parsed.KeyUsageLimit != 720 {
+		t.Error("Invalid parsing: KEY_USAGE_LIMIT should default to 720 for KMS_MODE=STRICT")
 	}
 }
 

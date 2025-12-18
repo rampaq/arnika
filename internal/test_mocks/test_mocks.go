@@ -12,6 +12,8 @@ type MockVPN struct {
 	Key       string
 	Activated bool
 	Pubkey    string
+	KeyCounter kms.KeyCounter
+	limitedKey bool // default to not limit key usages
 }
 type mockKeyStore struct {
 	keys []kms.Key
@@ -19,8 +21,14 @@ type mockKeyStore struct {
 }
 
 /// VPN
-func (vpn *MockVPN) SetKey(s string) error {
-	vpn.Key = s
+func NewMockVPNLimited(keyUsedLimit int) *MockVPN {
+	return &MockVPN{KeyCounter: kms.NewKeyCounter(keyUsedLimit), limitedKey: true}
+}
+func (vpn *MockVPN) SetKey(s *kms.Key) error {
+	if vpn.limitedKey && !vpn.KeyCounter.AddUsed(s.ID) {
+		return fmt.Errorf("usage exceeded for key with ID '%s'", s.ID)
+	}
+	vpn.Key = s.Key
 	vpn.Activated = true
 	return nil
 }

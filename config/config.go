@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +36,8 @@ type Config struct {
 	WireGuardInterface     string        // WIREGUARD_INTERFACE, Name of the WireGuard interface to configure
 	WireguardPeerPublicKey string        // WIREGUARD_PEER_PUBLIC_KEY, Public key of the WireGuard peer
 	PQCPSKFile             string        // PQC_PSK_FILE, Path to the PQC PSK file
-	PSKExpirationInterval     time.Duration   // PSK_EXPIRATION_INTERVAL, Interval; if PSK is not refreshed in this interval, deactivate peer; 0 to disable
+	PSKExpirationInterval  time.Duration // PSK_EXPIRATION_INTERVAL, Interval; if PSK is not refreshed in this interval, deactivate peer; 0 to disable
+	KeyUsageLimit          int           // KEY_USAGE_LIMIT, limit how many times a given KMS key can be used; only applicable with KMS_MODE=LAST_FALLBACK; default to 720; a key is used on each Interval tick; can be negative to allow for unlimited use
 }
 
 // Use PQC returns a boolean indicating whether the PQC PSK file is set in the Config struct.
@@ -94,10 +96,16 @@ func Parse() (*Config, error) {
 	switch strings.ToLower(getEnvOrDefault("KMS_MODE", "")) {
 	case "strict", "":
 		config.KMSMode = KmsStrict
+		config.KeyUsageLimit = 1
 		log.Println("KMS strict mode enabled")
 	case "last_fallback":
 		config.KMSMode = KmsLastFallback
 		log.Println("KMS fallback mode enabled")
+		i, err := strconv.Atoi(getEnvOrDefault("KEY_USAGE_LIMIT", "720"))
+		if err != nil {
+			return nil, fmt.Errorf("could not parse integer KEY_USAGE_LIMIT")
+		}
+		config.KeyUsageLimit = i
 	default:
 		return nil, fmt.Errorf("unknown KMS_MODE")
 	}

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/arnika-project/arnika/kms"
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -16,7 +17,7 @@ import (
 // VPN represents encrypted network interface (wireguard)
 type VPN interface {
 	// SetKey sets pre-shared encryption key
-	SetKey(key string) error
+	SetKey(key *kms.Key) error
 	// Deactivates peer commication; (Wireguard might take up-to two minutes)
 	DeactivatePeer() error
 	// Get interface public key (our pubkey)
@@ -38,6 +39,8 @@ type WireGuardHandler struct {
 	// expiration timer
 	timer *time.Timer
 	timerDur time.Duration
+	// track key repetition usage
+	keyCounter kms.KeyCounter
 }
 
 // Setup Wireguard interface - initiate handler and set random PSK for wg iface.
@@ -57,7 +60,7 @@ type WireGuardHandler struct {
 // Returns:
 // - a pointer to a WireGuardHandler.
 // - error: an error if the setup failed.
-func SetupWireGuardIF(ifname string, peerPublicKey string) (*WireGuardHandler, error) {
+func SetupWireGuardIF(ifname string, peerPublicKey string, keyUsageCounter int) (*WireGuardHandler, error) {
 	client, err := wgctrl.New()
 	if err != nil {
 		return nil, err
@@ -66,7 +69,7 @@ func SetupWireGuardIF(ifname string, peerPublicKey string) (*WireGuardHandler, e
 	if err != nil {
 		return nil, err
 	}
-	wgh := WireGuardHandler{conn: client, ifname: ifname, peerPubKey: publicKey, active: true}
+	wgh := WireGuardHandler{conn: client, ifname: ifname, peerPubKey: publicKey, active: true, keyCounter: kms.NewKeyCounter(keyUsageCounter)}
 
 	err = wgh.interfaceDown()
 	if err != nil {
@@ -114,6 +117,7 @@ func (wg *WireGuardHandler) AddExpirationTimer(dur time.Duration) bool {
 
 // SetKey sets the preshared key for a WireGuard device.
 //
+// An ID must be supplied with the key in order to detect if r key is being used too many times in a row.
 // It automatically activates the wg interface after setting the PSK. If AddExpirationTimer was called earlier, activate the timer.
 //
 // Parameters:
@@ -121,8 +125,12 @@ func (wg *WireGuardHandler) AddExpirationTimer(dur time.Duration) bool {
 //
 // Returns:
 // - error: an error if any occurred during the process.
-func (wg *WireGuardHandler) SetKey(pskString string) error {
-	psk, err := wgtypes.ParseKey(pskString)
+func (wg *WireGuardHandler) SetKey(pskKey *kms.Key) error {
+	if !wg.keyCounter.AddUsed(pskKey.ID) {
+		wg.DeactivatePeer()
+		return fmt.Errorf("reached key limit usage for the key '%s', deactivating peer", pskKey.ID)
+	}
+	psk, err := wgtypes.ParseKey(pskKey.Key)
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,8 @@ import (
 	"github.com/arnika-project/arnika/kms"
 )
 
+// TODO: proper testing of the actual Wireguard code either in container or via mocking the netlink and wireguard drivers
+
 // Test client sendRequestAndSetPSK
 // <- KMS not available, fallback key not available
 // -> deactivate vpn peer
@@ -31,7 +33,7 @@ func TestClient_KmsErr_NoFallbackKey(t *testing.T) {
 			vpn := new(m.MockVPN)
 			keystore := m.NewKeyStore("error", nil)
 			client := initiator{cfg, vpn, keystore}
-			vpn.SetKey("testkey")
+			vpn.SetKey(&kms.Key{ID: "", Key: "testkey"})
 			err := client.sendRequestAndSetPSK()
 
 			if err == nil {
@@ -62,7 +64,7 @@ func TestClient_KmsErr_HasKmsFallback_PeerConnErr(t *testing.T) {
 	vpn := new(m.MockVPN)
 	keystore := m.NewKeyStore("fallback-only", []kms.Key{key})
 	client := initiator{cfg, vpn, keystore}
-	vpn.SetKey("testkey")
+	vpn.SetKey(&kms.Key{ID: "", Key: "testkey"})
 	vpn.DeactivatePeer()
 	err := client.sendRequestAndSetPSK()
 
@@ -114,7 +116,7 @@ func TestClientServer_PeerConnOk(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			vpn := new(m.MockVPN)
-			vpn.SetKey("testkey")
+			vpn.SetKey(&kms.Key{ID: "", Key: "testkey"})
 			vpn.DeactivatePeer()
 
 			listenAddr := h.GetFreeLocalhostAddr()
@@ -171,6 +173,29 @@ func TestClientServer_PeerConnOk(t *testing.T) {
 // 		})
 // 	}
 // }
+
+func TestClient_KeyUsageLimit(t *testing.T) {
+	usageLimit := 5
+	vpn := m.NewMockVPNLimited(usageLimit)
+	key := kms.Key{
+		ID:  "bcbff446-c81b-4167-b40a-7c88f253ebda",
+		Key: "q7eo2gEaZ48U/dI8qCFuLy5q0ySnkQGDJzCCZQQkfJg=",
+	}
+	// cfg := &config.Config{KMSMode: config.KmsLastFallback}
+	// keystore := m.NewKeyStore("fallback-only", []kms.Key{key})
+	// client := initiator{cfg, vpn, keystore}
+	for i := range usageLimit - 1 {
+		err := vpn.SetKey(&key)
+		if err != nil {
+			t.Fatalf("failed on usage %d/%d", i, usageLimit)
+		}
+	}
+	err := vpn.SetKey(&key)
+	if err == nil {
+		t.Fatal("did not fail with stale key")
+	}
+	assertActiveKey(t, vpn, key)
+}
 
 func assertActiveKey(t *testing.T, vpn *m.MockVPN, key kms.Key) {
 	t.Helper()

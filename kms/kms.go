@@ -22,6 +22,26 @@ type KeyStore interface {
 	GetFallbackKey() (*Key, error)
 }
 
+// KeyCounter tracks the number of times a key with given ID was used
+// Does track only consecutive usages of a key
+type KeyCounter struct {
+	keyID string
+	used int
+	usedLimit int
+}
+func NewKeyCounter(keyUsedLimit int) KeyCounter{
+	return KeyCounter{usedLimit: keyUsedLimit}
+}
+// AddUsed increments internal used counter and returns whether the key is too old at this point, meaning do not use the key anymore
+func (c *KeyCounter) AddUsed(keyID string) bool {
+	if keyID != c.keyID {
+		c.keyID = keyID
+		c.used = 0
+	}
+	c.used++
+	return c.used < c.usedLimit
+}
+
 // Auth holds the configuration for authentication with a KMS server.
 //
 // cert: the path to the client certificate file.

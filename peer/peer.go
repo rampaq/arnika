@@ -127,7 +127,7 @@ func (s *responder) processRequest(req net.ArnikaRequest) error {
 		time.Sleep(time.Millisecond * 100)
 		return err
 	}
-	err = setPSK(key.GetKey(), s.wgh, s.cfg)
+	err = setPSK(key, s.cfg, s.wgh)
 	if err != nil {
 		log.Println(err.Error())
 	}
@@ -216,7 +216,7 @@ func (c *initiator) sendRequestAndSetPSK() error {
 	}
 
 	// always set new PSK, even if NetClient was not succesful
-	err = setPSK(key.GetKey(), c.wgh, c.cfg)
+	err = setPSK(key, c.cfg, c.wgh)
 	if err != nil {
 		return fmt.Errorf("cannot set PSK: %v; error during contacting Arnika: %v", err, errClient)
 	}
@@ -243,16 +243,17 @@ func getPQCKey(pqcKeyFile string) (string, error) {
 	return scanner.Text(), nil
 }
 
-func setPSK(psk string, wgh wg.VPN, cfg *config.Config) error {
+func setPSK(qkd *kms.Key, cfg *config.Config, wgh wg.VPN) error {
 	if cfg.UsePQC() {
 		pQCKey, err := getPQCKey(cfg.PQCPSKFile)
 		if err != nil {
 			return err
 		}
-		psk, err = kdf.DeriveKey(psk, pQCKey)
+		psk, err := kdf.DeriveKey(qkd.GetKey(), pQCKey)
 		if err != nil {
 			return err
 		}
+		return wgh.SetKey(&kms.Key{ID: qkd.ID, Key: psk})
 	}
-	return wgh.SetKey(psk)
+	return wgh.SetKey(qkd)
 }
