@@ -1,0 +1,9 @@
+secret_key = "/etc/rosenpass/my/pqsk"
+public_key = "/etc/rosenpass/my/pqpk"
+listen = ["[::]:9998"]
+verbosity = "Verbose"
+
+[[peers]]
+public_key = "/etc/rosenpass/bob.pqpk"
+endpoint = "10.100.1.3:9998"
+key_out = "/app/keys/pqc_psk"

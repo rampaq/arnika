@@ -1,0 +1,29 @@
+---
+- name: Arnika VPN deployment
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+    - name: Include OpenVPN tasks
+      import_tasks: tasks/openvpn.yml
+      tags: openvpn
+
+    - name: Include WireGuard tasks
+      import_tasks: tasks/wireguard.yml
+      tags: wg
+
+    - name: Include Arnika tasks
+      import_tasks: tasks/arnika.yml
+      tags: arnika
+
+    - name: Include Rosenpass tasks
+      import_tasks: tasks/rosenpass.yml
+      tags: rosenpass
+
+  handlers:
+    - name: Reload firewalld
+      systemd:
+        name: firewalld
+        state: reloaded

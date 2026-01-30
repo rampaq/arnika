@@ -1,0 +1,31 @@
+- name: Upload rosenpass binaries
+  ansible.builtin.copy:
+    src: "bin/rosenpass"
+    dest: "/opt/"
+    owner: root
+    group: root
+    mode: "0775"
+
+- name: Copy RP keys
+  copy:
+    src: "rosenpass/{{inventory_hostname}}/"
+    dest: "/etc/arnika/rosenpass/"
+    mode: "0600"
+
+- name: Add Rosenpass config
+  ansible.builtin.template:
+    src: rosenpass/rp.toml.j2
+    dest: /etc/arnika/rosenpass/rp.toml
+    mode: "0600"
+
+- name: Allow Rosenpass in firewalld
+  ansible.posix.firewalld:
+    port: "{{ rosenpass_listen.split(':')[1] }}/udp"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  when:
+    rosenpass_listen is defined and rosenpass_listen.split(":")[0] == "0.0.0.0"
+  notify:
+    - Reload firewalld
+

@@ -1,0 +1,28 @@
+# ${ALICE_IP} ... defined in .env file
+services:
+  alice:
+    image: test-vpn
+    container_name: alice
+    restart: unless-stopped
+    environment:
+      - KMS_MODE=LAST_FALLBACK
+      - LOCAL_BOB=0
+      - WIREGUARD_OTHER=10.200.1.3
+      - WIREGUARD_PEER_PUBLIC_KEY=qjVcqiwn1pe5f3K/uawq9kpOj3iRl5hRnCQk2yYDLho=
+      - SERVER_ADDRESS=faikltom-01.kib.in.fit.cvut.cz:9999
+#      - LISTEN_ADDRESS=127.0.0.1:9999
+      - KMS_URL=https://${KMSM_IP}:443/api/v1/keys/CONSUMER-B-FJFI
+      - CERTIFICATE=${CERT_FOLDER}/CONSUMER-A-FJFI.crt
+      - PRIVATE_KEY=${CERT_FOLDER}/CONSUMER-A-FJFI.key
+
+      - CA_CERTIFICATE=${CERT_FOLDER}/QKD-polygon-CTU.pem
+      - KMS_HTTP_TIMEOUT=10s
+      - WIREGUARD_INTERFACE=wg0
+      - INTERVAL=120s
+    volumes:
+      - ./config/alice/wg:/etc/wireguard
+      - ./config/alice/rosenpass:/etc/rosenpass
+     # - /lib/modules:/lib/modules:ro
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE

@@ -1,0 +1,149 @@
+#!/bin/bash
+# shellcheck enable=check-unassigned-uppercase
+
+# start arnika + rosenpass
+# ! relies on some environment variables being present, do not use stand-alone
+
+set -eEuo pipefail
+PATH="/opt/arnika:/opt/rosenpass:$PATH"
+ROSENPASS_PID=
+ARNIKA_PID=
+FINALIZED=0
+WG_CONF="${WG_CONF:-/etc/arnika/wireguard/$WIREGUARD_INTERFACE.conf}"
+RP_CONF="${RP_CONF:-/etc/arnika/rosenpass/rp.toml}"
+
+# set print_keys=1 to enable printing changing keys for wireguard and rosenpass
+# WARNING: doing so will print the keys to log
+print_keys=0
+
+trap 'finalize $?' SIGINT SIGTERM
+trap 'echo "Error on line $LINENO"; finalize' ERR
+
+finalize() {
+    # $1=last exit code
+    [ $FINALIZED -eq 1 ] && exit
+    FINALIZED=1
+    ip link show "$WIREGUARD_INTERFACE" >/dev/null 2>&1 \
+        && wg-quick down "$WG_CONF" 2>/dev/null
+    [ -n "$ARNIKA_PID" ] && [ -d "/proc/${ARNIKA_PID}" ] \
+        && kill "$ARNIKA_PID"
+    [ -n "$ROSENPASS_PID" ] && [ -d "/proc/${ROSENPASS_PID}" ] \
+        && kill "$ROSENPASS_PID"
+    echo "finalisation complete"
+}
+
+fail_on_pid_exit() {
+    # fail when $2=PID is not running
+    local name="$1"
+    local pid="$2"
+    if [ -z "$pid" ]
+    then
+        echo "Invalid PID - exiting..."
+        finalize
+        kill 0
+    fi
+
+    while [ -d "/proc/${pid}" ]
+    do
+        sleep 1
+    done
+    echo "! Process <$name> is not running, exiting..."
+    finalize
+    kill 0
+}
+
+create_wg_if() {
+    # create deactivated wireguard interface
+    echo "+ wg-quick & IF down"
+
+    # problem with this code: there is a moment when interface is up
+    # wg-quick up "$WG_CONF"
+    # ip link set down dev "$WIREGUARD_INTERFACE"
+
+    # create interface with stripped config & assign IP addresses
+    # stripped config does not support MTU, DNS, Table, Pre/Post hooks, SaveConfig
+    local invalid_lines
+    invalid_lines="$(grep -v '^\s*$|^\s*#' "$WG_CONF" | grep -qE "^(MTU|DNS|Table|PreUp|PreDown|PostUp|PostDown|SaveConfig)" | cut -d= -f2 || exit 0)"
+    if [ -n "$invalid_lines" ]
+    then
+        echo "! file $WG_CONF contains invalid lines - this script does not fully support extended wg-quick configuration:"
+        echo "$invalid_lines"
+    fi
+    ip link add dev "$WIREGUARD_INTERFACE" type wireguard
+    wg setconf "$WIREGUARD_INTERFACE" <(wg-quick strip "$WG_CONF")
+    wg set "$WIREGUARD_INTERFACE" peer "$WIREGUARD_PEER_PUBLIC_KEY" preshared-key <(wg genpsk)
+    local addresses
+    local address
+    addresses="$(grep -v '^\s*$|^\s*#' "$WG_CONF" | grep "^Address=" | cut -d= -f2)"
+    while IFS= read -r address || [[ -n "$address" ]]; do
+        local proto=-4
+        [[ $address == *:* ]] && proto=-6
+        ip $proto address add "$address" dev "$WIREGUARD_INTERFACE"
+    done < <(printf '%s' "$addresses")
+}
+
+create_osk_tmpfs_mount() {
+    # create a tmpfs without swap to prevent the PQC secret from rosenpass being written to disk
+    [ "${PQC_PSK_FILE#/var/cache/arnika}" = "$PQC_PSK_FILE" ] && { echo "PQC_PSK_FILE=$PQC_PSK_FILE is not children of /var/cache/arnika, aborting"; exit 1; }
+    (
+        umask 077;
+        findmnt /var/cache/arnika >/dev/null || { echo "mounting tmpfs for secrets"; mount -t tmpfs tmpfs -o size=1M,noswap /var/cache/arnika; }
+        mkdir -p "$(dirname "$PQC_PSK_FILE")"
+    )
+    chmod 700 /var/cache/arnika
+    chown root:root /var/cache/arnika
+}
+
+start_rosenpass() {
+    ## run pqc server
+    echo "+ Running rosenpass..."
+    rm -f "$PQC_PSK_FILE"
+    # RUST_LOG=info
+    rosenpass exchange-config "$RP_CONF" &
+    ROSENPASS_PID="$!"
+    fail_on_pid_exit "Rosenpass" "$ROSENPASS_PID" &
+
+    # block until PQC PSK is created
+    echo "Waiting for new PQC PSK..."
+    while true; do if [ -f "$PQC_PSK_FILE" ]; then break; else sleep 1; fi; done
+    echo "PQC PSK created"
+}
+
+start_arnika() {
+    echo "+ Running arnika..."
+    # set random psk - no connection can occur until key exchange takes place
+    # ip link set up dev "$WIREGUARD_INTERFACE"
+    arnika &
+    ARNIKA_PID="$!"
+    fail_on_pid_exit "Arnika" "$ARNIKA_PID" &
+}
+
+monitor_keys() {
+    old_wg_key=0
+    # old_pqc_key=0
+    while true
+    do
+        wg_key="$(wg showconf "$WIREGUARD_INTERFACE" 2>/dev/null | grep PresharedKey || exit 0)"
+        [ "$old_wg_key" = "$wg_key" ] || { echo "WG PSK: $wg_key"; old_wg_key="$wg_key"; }
+        # pqc_key="$(cat < "$PQC_PSK_FILE")"
+        # [ "$old_pqc_key" = "$pqc_key" ] || { echo "PQC PSK: $pqc_key"; old_pqc_key="$pqc_key"; }
+        sleep 1
+    done
+}
+
+
+main() {
+    create_wg_if
+    create_osk_tmpfs_mount
+    start_rosenpass
+
+    # TODO: REMOVE
+    # slp=${SLEEP:-"0.$((RANDOM%999))"}
+    # echo "sleep: $slp"
+    # sleep "$slp"
+
+    start_arnika
+    [ "$print_keys" -eq 1 ] && monitor_keys
+}
+
+main

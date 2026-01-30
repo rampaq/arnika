@@ -1,0 +1,7 @@
+# OpenVPN credentials
+openvpn_username: "openvn-username"
+openvpn_password: "openvpn-password"
+
+# WireGuard configuration
+wireguard_interface: wgqkd0
+wireguard_port: 51820

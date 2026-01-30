@@ -1,0 +1,13 @@
+[Unit]
+Description=Arnika Quantum Secure VPN
+After=network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStart=/opt/arnika/arnika-wrapper
+EnvironmentFile=/etc/arnika/arnika.env
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,55 @@
+---
+# Install OpenVPN for KMS network
+- name: Install OpenVPN
+  apt:
+    name: 
+      - openvpn
+    state: present
+    update_cache: yes
+
+    # - name: Create parent directories
+    #   ansible.builtin.file:
+    #     path: "/etc/openvpn/kms"
+    #     state: directory
+
+# Upload OpenVPN configuration file
+- name: Upload OpenVPN configuration
+  copy:
+    src: openvpn/kms.ovpn
+    dest: /etc/openvpn/kms.conf
+    owner: root
+    group: root
+    mode: '0600'
+
+# Create OpenVPN authentication file
+- name: Upload OpenVPN auth info
+  copy:
+    src: openvpn/kms-auth.txt
+    dest: /etc/openvpn/kms-auth.txt
+    owner: root
+    group: root
+    mode: '0600'
+#- name: Create OpenVPN authentication file
+#  copy:
+#    content: |
+#      {{ openvpn_username }}
+#      {{ openvpn_password }}
+#    dest: /etc/openvpn/kms-auth.txt
+#    owner: root
+#    group: root
+#    mode: '0600'
+
+# Add auth-user-pass to OpenVPN config
+- name: Configure OpenVPN to use authentication file
+  lineinfile:
+    path: /etc/openvpn/kms.conf
+    line: "auth-user-pass /etc/openvpn/kms-auth.txt"
+    state: present
+    insertafter: '^client$'
+
+# Enable and start OpenVPN service
+- name: Enable and start OpenVPN service
+  systemd:
+    name: openvpn@kms
+    enabled: yes
+    state: started

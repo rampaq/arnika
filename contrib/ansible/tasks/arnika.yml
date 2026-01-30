@@ -1,0 +1,120 @@
+#- name: Create Arnika directory
+#  ansible.builtin.file:
+#    state: directory
+#    owner: root
+#    group: root
+#    mode: "0770"
+#    path: "{{ arnika_tmpdir.path }}"
+#  tags:
+#    - arnika_dir
+#    - arnika
+
+- name: Upload Arnika
+  ansible.builtin.copy:
+    src: "bin/arnika"
+    dest: "/opt/"
+    owner: root
+    group: root
+    mode: "0775"
+
+    #- name: Create tmp dir for arnika download
+    #  ansible.builtin.tempfile:
+    #    state: directory
+    #    suffix: arnika
+    #  register: arnika_tmpdir.path
+    #
+    #
+  #- name: Download Arnika
+  #  ansible.builtin.get_url:
+  #    url: "https://github.com/arnika-project/arnika/releases/download/v0.2.1/arnika-v0.2.1_linux_amd64.tar.gz"
+  #    dest: "{{ arnika_tmpdir.path }}/arnika-linux.tar.gz"
+  #    owner: root
+  #    group: root
+  #    mode: "0660"
+  #
+  #- name: Uncompress arnika binary
+  #  ansible.builtin.unarchive:
+  #    src: "{{ arnika_tmpdir.path }}/arnika-linux.tar.gz"
+  #    dest: "{{ arnika_tmpdir.path }}"
+  #    remote_src: true
+  #    owner: root
+  #    group: root
+  #    mode: "0750"
+  #- name: copy binary to /usr/local/sbin/arnika
+  #  ansible.builtin.copy:
+  #    src: "{{ arnika_tmpdir.path }}/arnika"
+  #    dest: /usr/bin/arnika
+  #    owner: root
+  #    group: root
+  #    mode: "0770"
+  #    #    state: link
+
+    #- name: Use the registered var and the file module to remove the temporary file
+    #  ansible.builtin.file:
+    #    path: "{{ tempfile_1.path }}"
+    #    state: absent
+    #  when: arnika_tmpdir.path.path is defined
+
+- name: Create Arnika config dir
+  ansible.builtin.file:
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+    path: "/etc/arnika"
+
+- name: Create KMS ETSI014 certificate directory
+  ansible.builtin.file:
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+    path: "{{ kms_cert_dir }}/kms"
+
+- name: Upload KMS ETSI04 certificates
+  ansible.builtin.copy:
+    src: "certs/{{ item }}"
+    dest: "{{ kms_cert_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  with_items:
+    - "{{kms_my_name}}.csr"
+    - "{{kms_my_name}}.crt"
+    - "{{kms_my_name}}.key"
+    - "{{kms_ca_file}}.pem"
+
+- name: deploy environment file
+  ansible.builtin.template:
+    src: "arnika/arnika.env.j2"
+    dest: "/etc/arnika/arnika.env"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Deploy Arnika Systemd Unit file config
+  ansible.builtin.copy:
+    src: "arnika/arnika.service"
+    dest: "/etc/systemd/system/arnika.service"
+    owner: root
+    group: root
+    mode: "0664"
+
+- name: Allow Arnika port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ arnika_listen.split(':')[1] }}/tcp"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  when:
+    arnika_listen is defined and arnika_listen.split(":")[0] == "0.0.0.0"
+  notify:
+    - Reload firewalld
+
+    #- name: Enable and start systemd arnika.service
+    #  ansible.builtin.systemd:
+    #    name: "arnika.service"
+    #    enabled: true
+    #    state: started
+    #    # state: stopped            # <- stopped used for ansible debugging
+    #    daemon_reload: true

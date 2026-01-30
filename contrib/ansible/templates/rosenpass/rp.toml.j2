@@ -1,0 +1,15 @@
+# server
+secret_key = "/etc/arnika/rosenpass/my/pqsk"
+public_key = "/etc/arnika/rosenpass/my/pqpk"
+{% if rosenpass_listen is defined %}
+listen = ["{{rosenpass_listen}}"]
+{% endif %}
+verbosity = "Verbose"
+
+[[peers]]
+public_key = "/etc/arnika/rosenpass/{{ peer }}.pqpk"
+{% if hostvars[peer].rosenpass_listen.split(":")[0] == "0.0.0.0" %}
+endpoint = "{{ hostvars[peer].ansible_host }}:{{ hostvars[peer].rosenpass_listen.split(":")[1] }}"
+{% endif %}
+
+key_out = "/var/cache/arnika/{{ peer }}/pqc_psk"

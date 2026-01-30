@@ -1,0 +1,37 @@
+---
+# install wireguard
+- name: Install WireGuard tools
+  apt:
+    name: wireguard-tools
+    state: present
+    update_cache: yes
+
+
+- name: Create arnika wireguard directory
+  ansible.builtin.file:
+    path: /etc/arnika/wireguard
+    state: directory
+    mode: '0700'
+
+- name: Upload WireGuard configuration
+  copy:
+    src: "wireguard/{{inventory_hostname}}/wg0.conf"
+    dest: /etc/arnika/wireguard/{{ wireguard_interface }}.conf
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Allow WireGuard port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ wireguard_port }}/udp"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  notify:
+    - Reload firewalld
+
+    # - name: Enable and start WireGuard interface
+    #   systemd:
+    #     name: wg-quick@{{ wireguard_interface }}
+    #     enabled: yes
+    #     state: started
