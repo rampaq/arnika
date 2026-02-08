@@ -17,6 +17,7 @@ fit:
         kms_ip: 10.40.2.5 # slave FJFI-FIT
         arnika_interval: 137s # MASTER_TIMEOUT (120) + KMS_timeout (10) + safety (7)
         arnika_kms_timeout: 10s
+        psk_expiration_interval: 10m
 
         # rosenpass
         rosenpass_listen: 0.0.0.0:9998
@@ -43,6 +44,7 @@ fit:
         # arnika_peer: faikltom-01.kib.in.fit.cvut.cz:9999
         arnika_peer: "{{ hostvars[peer].ansible_host }}:9999"
         kms_ip: 10.40.1.5 # master FJFI-FIT
+        psk_expiration_interval: 10m
 
         # wireguard
         wireguard_peer_ip: 10.200.1.3
