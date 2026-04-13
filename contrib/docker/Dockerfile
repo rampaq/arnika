@@ -29,7 +29,7 @@ RUN mkdir -p /etc/wireguard /etc/rosenpass /app/bin /app/keys
 
 # Copy the entrypoint script
 COPY entrypoint.sh /app
-COPY bin /app/bin
+# COPY bin /app/bin
 COPY fit_connect/ /app/fit_connect
 RUN chmod +x /app/entrypoint.sh && \
     chmod -R +x /app/bin

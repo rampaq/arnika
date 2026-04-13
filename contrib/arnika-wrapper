@@ -1,25 +1,56 @@
 #!/bin/bash
 # shellcheck enable=check-unassigned-uppercase
 
-# start arnika + rosenpass
+###################################################
+# ARNIKA WRAPPER
+###################################################
+# start arnika, rosenpass and wireguard and ensure they are tightly integrated without race-conditions
+# 
 # ! relies on some environment variables being present, do not use stand-alone
+###################################################
 
 set -eEuo pipefail
 PATH="/opt/arnika:/opt/rosenpass:$PATH"
+
+#### Config begin
+# checks if all required env vars (for this script) are present, arnika/rosenpass does additional checking on its own
+# required env variables for this script:
+declare -a env_vars=("WIREGUARD_INTERFACE" "PQC_PSK_FILE" "WIREGUARD_PEER_PUBLIC_KEY" "WIREGUARD_OTHER")
+for var_name in "${env_vars[@]}"
+do
+    if [ x"${!var_name}" = "x" ]; then # parameter expansion
+        echo "$var_name is not defined; define it by sourcing an .env file for Arnika or define it in your environment." >&2
+        exit 1
+    fi
+done
+
+# location of wireguard configuration file
+WG_CONF="${WG_CONF:-/etc/arnika/wireguard/$WIREGUARD_INTERFACE.conf}"
+
+# location of rosenpass configuration file
+RP_CONF="${RP_CONF:-/etc/arnika/rosenpass/rp.toml}"
+
+# set create_tmpfs to 1 to enable creating tmpfs for the output shared key from Rosenpass (so that it is not written to disk) for PQC_PSK_FILE
+# PQC_PSK_FILE must be located under /var/cache/arnika if tmpfs is enabled
+ARNIKA_CREATE_TMPFS="${ARNIKA_CREATE_TMPFS:-1}"
+
+# WARNING: doing so will print the keys to log - DO NOT USE DEBUG IN PRODUCTION!
+# debug=0 - no debug
+# debug=1 - print PSK of wireguard interfaces when it changes
+# debug=2 - also ping the other machine continually
+ARNIKA_DEBUG_LEVEL="${ARNIKA_DEBUG_LEVEL:-0}"
+
+#### Config end
+
 ROSENPASS_PID=
 ARNIKA_PID=
 FINALIZED=0
-WG_CONF="${WG_CONF:-/etc/arnika/wireguard/$WIREGUARD_INTERFACE.conf}"
-RP_CONF="${RP_CONF:-/etc/arnika/rosenpass/rp.toml}"
-
-# set print_keys=1 to enable printing changing keys for wireguard and rosenpass
-# WARNING: doing so will print the keys to log
-print_keys=0
 
 trap 'finalize $?' SIGINT SIGTERM
 trap 'echo "Error on line $LINENO"; finalize' ERR
 
 finalize() {
+    # end all remaining running processes
     # $1=last exit code
     [ $FINALIZED -eq 1 ] && exit
     FINALIZED=1
@@ -33,7 +64,7 @@ finalize() {
 }
 
 fail_on_pid_exit() {
-    # fail when $2=PID is not running
+    # fail when given program with ($2=)PID is not running
     local name="$1"
     local pid="$2"
     if [ -z "$pid" ]
@@ -56,12 +87,14 @@ create_wg_if() {
     # create deactivated wireguard interface
     echo "+ wg-quick & IF down"
 
-    # problem with this code: there is a moment when interface is up
-    # wg-quick up "$WG_CONF"
-    # ip link set down dev "$WIREGUARD_INTERFACE"
+    # problem with the following code would be that there is a moment when interface is up ::
+    #   wg-quick up "$WG_CONF"
+    #   ip link set down dev "$WIREGUARD_INTERFACE"
+    # ::
 
-    # create interface with stripped config & assign IP addresses
+    # instead, create interface with stripped config & assign IP addresses
     # stripped config does not support MTU, DNS, Table, Pre/Post hooks, SaveConfig
+    # taken and modified from wg-quick bash script
     local invalid_lines
     invalid_lines="$(grep -v '^\s*$|^\s*#' "$WG_CONF" | grep -qE "^(MTU|DNS|Table|PreUp|PreDown|PostUp|PostDown|SaveConfig)" | cut -d= -f2 || exit 0)"
     if [ -n "$invalid_lines" ]
@@ -110,23 +143,32 @@ start_rosenpass() {
 }
 
 start_arnika() {
+    # run arnika
     echo "+ Running arnika..."
     # set random psk - no connection can occur until key exchange takes place
-    # ip link set up dev "$WIREGUARD_INTERFACE"
+    
+    # INFO: if using modified arnika version that automatically activates its WG interface, the following is not needed
+    #       if using original Arnika version, bring the interface up here (make sure that random psk was set earlier to prevent race condition)
+    #   ip link set up dev "$WIREGUARD_INTERFACE"
+    
     arnika &
     ARNIKA_PID="$!"
     fail_on_pid_exit "Arnika" "$ARNIKA_PID" &
 }
 
 monitor_keys() {
+    # print new wireguard PSK when changed
     old_wg_key=0
     # old_pqc_key=0
     while true
     do
         wg_key="$(wg showconf "$WIREGUARD_INTERFACE" 2>/dev/null | grep PresharedKey || exit 0)"
         [ "$old_wg_key" = "$wg_key" ] || { echo "WG PSK: $wg_key"; old_wg_key="$wg_key"; }
-        # pqc_key="$(cat < "$PQC_PSK_FILE")"
-        # [ "$old_pqc_key" = "$pqc_key" ] || { echo "PQC PSK: $pqc_key"; old_pqc_key="$pqc_key"; }
+        # if [ "$ARNIKA_DEBUG_LEVEL" -ge 2 ]
+        # then
+        #     pqc_key="$(cat < "$PQC_PSK_FILE")"
+        #     [ "$old_pqc_key" = "$pqc_key" ] || { echo "PQC PSK: $pqc_key"; old_pqc_key="$pqc_key"; }
+        # fi
         sleep 1
     done
 }
@@ -134,16 +176,23 @@ monitor_keys() {
 
 main() {
     create_wg_if
-    create_osk_tmpfs_mount
+    [ "$ARNIKA_CREATE_TMPFS" -eq 1 ] && create_osk_tmpfs_mount || true
     start_rosenpass
 
-    # TODO: REMOVE
-    # slp=${SLEEP:-"0.$((RANDOM%999))"}
-    # echo "sleep: $slp"
-    # sleep "$slp"
-
     start_arnika
-    [ "$print_keys" -eq 1 ] && monitor_keys
+    case "$ARNIKA_DEBUG_LEVEL" in
+        0) 
+            # wait indefinitely for interrupt signal to exit
+            while true; do sleep 1; done
+            ;;
+        1) 
+            monitor_keys
+            ;;
+        2) 
+            monitor_keys &
+            ping "$WIREGUARD_OTHER"
+            ;;
+    esac
 }
 
 main

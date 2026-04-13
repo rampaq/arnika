@@ -1,3 +1,4 @@
+# Compose for scenario when Alice is initiator (master) and Bob is responder (slave)
 # ${ALICE_IP} ... defined in .env file
 services:
   alice:
@@ -8,6 +9,7 @@ services:
       lan:
         ipv4_address: ${ALICE_IP}
     environment:
+      - ARNIKA_DEBUG_LEVEL=2
       # - KMS_URL=http://192.168.69.2:8080/api/v1/keys/CONSA
       - KMS_URL=https://${KMSM_IP}:443/api/v1/keys/CONSUMER-B-FJFI
 
@@ -22,12 +24,14 @@ services:
       - WIREGUARD_PEER_PUBLIC_KEY=qjVcqiwn1pe5f3K/uawq9kpOj3iRl5hRnCQk2yYDLho=
       - CERTIFICATE=${CERT_FOLDER}/CONSUMER-A-FJFI.crt
       - PRIVATE_KEY=${CERT_FOLDER}/CONSUMER-A-FJFI.key
+      - ARNIKA_CREATE_TMPFS=0
 
       - CA_CERTIFICATE=${CERT_FOLDER}/QKD-polygon-CTU.pem
       - KMS_HTTP_TIMEOUT=10s
       - WIREGUARD_INTERFACE=wg0
       - INTERVAL=120s
     volumes:
+      - ./bin:/app/bin
       - ./config/alice/wg:/etc/wireguard
       - ./config/alice/rosenpass:/etc/rosenpass
      # - /lib/modules:/lib/modules:ro
@@ -42,6 +46,7 @@ services:
       lan:
         ipv4_address: ${BOB_IP}
     environment:
+      - ARNIKA_DEBUG_LEVEL=2
       - KMS_URL=https://${KMSS_IP}:443/api/v1/keys/CONSUMER-A-FJFI
       # - KMS_URL=http://192.168.69.2:8080/api/v1/keys/CONSA
 
@@ -54,12 +59,14 @@ services:
       - WIREGUARD_PEER_PUBLIC_KEY=sX+IB/0F5tjnJwy7QqQmK6mpBjdca9Lx8HolEquMMCo=
       - CERTIFICATE=${CERT_FOLDER}/CONSUMER-B-FJFI.crt
       - PRIVATE_KEY=${CERT_FOLDER}/CONSUMER-B-FJFI.key
+      - ARNIKA_CREATE_TMPFS=0
 
       - CA_CERTIFICATE=${CERT_FOLDER}/QKD-polygon-CTU.pem
       - KMS_HTTP_TIMEOUT=10s
       - WIREGUARD_INTERFACE=wg0
       - INTERVAL=137s # MASTER_TIMEOUT (120) + KMS_timeout (10) + safety (7)
     volumes:
+      - ./bin:/app/bin
       - ./config/bob/wg:/etc/wireguard
       - ./config/bob/rosenpass:/etc/rosenpass
      # - /lib/modules:/lib/modules:ro

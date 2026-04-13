@@ -8,8 +8,8 @@ services:
       - KMS_MODE=LAST_FALLBACK
       - LOCAL_BOB=0
       - WIREGUARD_OTHER=10.200.1.3
-      - WIREGUARD_PEER_PUBLIC_KEY=qjVcqiwn1pe5f3K/uawq9kpOj3iRl5hRnCQk2yYDLho=
-      - SERVER_ADDRESS=faikltom-01.kib.in.fit.cvut.cz:9999
+      - WIREGUARD_PEER_PUBLIC_KEY=bob_pubkey
+      - SERVER_ADDRESS=remote-host:9999
 #      - LISTEN_ADDRESS=127.0.0.1:9999
       - KMS_URL=https://${KMSM_IP}:443/api/v1/keys/CONSUMER-B-FJFI
       - CERTIFICATE=${CERT_FOLDER}/CONSUMER-A-FJFI.crt
