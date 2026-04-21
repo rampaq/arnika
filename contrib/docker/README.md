@@ -17,3 +17,7 @@
 - you can generate fresh PQC keys via `tools/gen-rosenpass.sh` for Rosenpass
 - alice and bob pubkeys and generate fresh WG keys
 - place your KMS certificates to `fit_connect`
+
+## Running docker
+- symlink/copy selected docker-compose-*.yml to docker-compose.yml
+- `sudo docker-compose up --build`

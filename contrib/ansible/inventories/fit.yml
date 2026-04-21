@@ -5,6 +5,8 @@ fit:
         ansible_host: your-host01
         ansible_user: root
 
+        # TODO: KMS_MODE, KEY_USAGE_LIMIT, ...
+
         # currently, only a single peer is supported for arnika
         # rosenpass should support multiple peers
         # use ansible host name (exactly as stated as a key in "hosts" map

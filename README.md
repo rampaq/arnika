@@ -49,3 +49,7 @@ There is also a script `contrib/arnika-wrapper` for running Arnika with all its 
 - `WIREGUARD_INTERFACE`, Name of the WireGuard interface to configure
 - `WIREGUARD_PEER_PUBLIC_KEY`, Public key of the WireGuard peer
 - `PQC_PSK_FILE`, Path to the PQC PSK file
+
+
+## Installation
+- instructions in original Arnika README, `make build`
